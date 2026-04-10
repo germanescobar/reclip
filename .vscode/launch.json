@@ -19,6 +19,26 @@
             "target": "LoomClone",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release LoomClone"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:recording}/swift",
+            "name": "Debug LoomClone (swift)",
+            "target": "LoomClone",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug LoomClone (swift)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:recording}/swift",
+            "name": "Release LoomClone (swift)",
+            "target": "LoomClone",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release LoomClone (swift)"
         }
     ]
 }

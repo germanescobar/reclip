@@ -1,0 +1,28 @@
+name: LoomClone
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  bundleIdPrefix: com.germanescobar
+  xcodeVersion: "16.0"
+settings:
+  SWIFT_VERSION: "5.9"
+  MACOSX_DEPLOYMENT_TARGET: "14.0"
+packages:
+  aws-sdk-swift:
+    url: https://github.com/awslabs/aws-sdk-swift.git
+    from: "1.0.0"
+targets:
+  LoomClone:
+    type: application
+    platform: macOS
+    sources: [LoomClone]
+    settings:
+      base:
+        INFOPLIST_FILE: LoomClone/Info.plist
+        CODE_SIGN_ENTITLEMENTS: LoomClone/LoomClone.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.germanescobar.LoomClone
+        CODE_SIGN_IDENTITY: "-"
+        PRODUCT_NAME: Reclip
+    dependencies:
+      - package: aws-sdk-swift
+        product: AWSS3

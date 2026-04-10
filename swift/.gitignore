@@ -1,0 +1,8 @@
+.build/
+LoomClone.xcodeproj/
+LoomClone.xcworkspace/
+*.xcodeproj/*.xcworkspace/
+*.xcodeproj/*.xcuserstates/
+.build/
+~.*.swiftdoc
+~.*.swift

@@ -1,8 +1,21 @@
-.build/
-LoomClone.xcodeproj/
-LoomClone.xcworkspace/
-*.xcodeproj/*.xcworkspace/
-*.xcodeproj/*.xcuserstates/
-.build/
-~.*.swiftdoc
-~.*.swift
+# macOS
+.DS_Store
+
+# Swift / Xcode
+swift/.build/
+swift/.swiftpm/
+swift/Packages/
+swift/Package.resolved.user
+swift/*.xcodeproj/xcuserdata/
+swift/*.xcworkspace/xcuserdata/
+swift/*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# Web / Node / Next.js
+web/node_modules/
+web/.next/
+web/.vercel/
+web/.env*.local
+web/.v0-trash/
+web/.snowflake/
+web/next.user-config.*
+web/tsconfig.tsbuildinfo
