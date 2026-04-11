@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { RecordingsList } from "@/components/recordings-list"
 import { Button } from "@/components/ui/button"
+import { desktopAppDownloadUrl } from "@/lib/desktop-app"
 import { Download } from "lucide-react"
 import type { Recording } from "@/lib/types"
 
@@ -25,9 +26,11 @@ export default async function DashboardPage() {
             Record your screen with camera overlay directly from your Mac.
           </p>
         </div>
-        <Button disabled>
-          <Download className="w-4 h-4" />
-          Download for macOS
+        <Button asChild>
+          <a href={desktopAppDownloadUrl}>
+            <Download className="w-4 h-4" />
+            Download for macOS
+          </a>
         </Button>
       </div>
       <div>

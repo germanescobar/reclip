@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { Play, Video, Share2, Gauge, Monitor } from "lucide-react"
+import { desktopAppDownloadUrl } from "@/lib/desktop-app"
+import { Download, Play, Video, Share2, Gauge, Monitor } from "lucide-react"
 
 export default function HomePage() {
   return (
@@ -42,6 +43,12 @@ export default function HomePage() {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             <Button size="lg" asChild>
               <Link href="/auth/sign-up">Start for Free</Link>
+            </Button>
+            <Button size="lg" variant="secondary" asChild>
+              <a href={desktopAppDownloadUrl}>
+                <Download className="w-4 h-4" />
+                Download macOS App
+              </a>
             </Button>
             <Button size="lg" variant="outline" asChild>
               <Link href="/auth/login">Sign in</Link>
