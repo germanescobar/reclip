@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
-import { Play, Video, Share2, Gauge, Key } from "lucide-react"
+import { Play, Video, Share2, Gauge, Monitor } from "lucide-react"
 
 export default function HomePage() {
   return (
@@ -36,7 +36,7 @@ export default function HomePage() {
             <span className="text-muted-foreground">With Anyone, Anywhere</span>
           </h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-10 text-pretty">
-            Store your S3 recordings and create shareable links with a custom video player. 
+            Record your screen with camera overlay, then share instantly with a link.
             Perfect for demos, tutorials, and presentations.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -73,40 +73,10 @@ export default function HomePage() {
               description="Watch at your own pace with adjustable playback speeds"
             />
             <FeatureCard
-              icon={Key}
-              title="API Access"
-              description="Programmatically add recordings via our REST API"
+              icon={Monitor}
+              title="Native macOS App"
+              description="A lightweight desktop app that stays out of your way"
             />
-          </div>
-        </div>
-      </section>
-
-      {/* API Section */}
-      <section className="py-20">
-        <div className="container max-w-6xl mx-auto px-4">
-          <div className="grid lg:grid-cols-2 gap-12 items-center">
-            <div>
-              <h2 className="text-3xl font-bold mb-4">
-                Developer-Friendly API
-              </h2>
-              <p className="text-muted-foreground mb-6">
-                Integrate Reclip into your workflow with our simple REST API. 
-                Generate API keys and start adding recordings programmatically.
-              </p>
-              <Button asChild>
-                <Link href="/auth/sign-up">Get Your API Key</Link>
-              </Button>
-            </div>
-            <div className="rounded-lg bg-secondary p-6 font-mono text-sm overflow-x-auto">
-              <pre className="text-foreground">{`curl -X POST https://your-domain.com/api/recordings \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "title": "My Recording",
-    "description": "Optional description",
-    "s3_url": "https://bucket.s3.amazonaws.com/video.mp4"
-  }'`}</pre>
-            </div>
           </div>
         </div>
       </section>
