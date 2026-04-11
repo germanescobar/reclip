@@ -165,8 +165,17 @@ else
 fi
 
 echo "==> Running Gatekeeper assessment"
-spctl --assess --type execute --verbose "$APP_PATH"
-spctl --assess --type open --verbose "$DMG_PATH"
+if [[ "${SKIP_NOTARIZATION}" == "1" ]]; then
+  if ! spctl --assess --type execute --verbose "$APP_PATH"; then
+    echo "Warning: Gatekeeper rejected app (expected in SKIP_NOTARIZATION=1 test mode)."
+  fi
+  if ! spctl --assess --type open --verbose "$DMG_PATH"; then
+    echo "Warning: Gatekeeper rejected DMG (expected in SKIP_NOTARIZATION=1 test mode)."
+  fi
+else
+  spctl --assess --type execute --verbose "$APP_PATH"
+  spctl --assess --type open --verbose "$DMG_PATH"
+fi
 
 echo "==> Computing SHA256 checksums"
 shasum -a 256 "$ZIP_PATH" | tee "$ROOT_DIR/build/${APP_NAME}.zip.sha256.txt"

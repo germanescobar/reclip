@@ -24,10 +24,9 @@ xcrun notarytool store-credentials "AC_NOTARY" \
 
 ## 3) Release Command
 
-From the Swift project root:
+From the Swift project root run the following:
 
 ```bash
-cd /Users/germanescobar/Projects/incubating/recording/swift
 ./scripts/release.sh
 ```
 
