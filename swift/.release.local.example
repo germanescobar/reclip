@@ -1,0 +1,7 @@
+# Copy this file to .release.local (ignored by git) and set your local values.
+
+# 10-character Apple Team ID (for example: KH9G36PM9D)
+DEVELOPMENT_TEAM=
+
+# Optional: notary keychain profile name created with `xcrun notarytool store-credentials`
+NOTARY_PROFILE=AC_NOTARY

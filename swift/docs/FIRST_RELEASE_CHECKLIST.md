@@ -37,21 +37,34 @@ If you need to test archive/export without notarization:
 SKIP_NOTARIZATION=1 ./scripts/release.sh
 ```
 
-## 4) Publish
+## 4) Create GitHub Release
 
-- Create a git tag (example: `v0.1.0`).
-- Create GitHub Release and upload:
-  - `build/Reclip.zip`
-  - `build/Reclip.zip.sha256.txt`
+- Create and upload release assets:
+
+```bash
+./scripts/publish-github-release.sh v0.1.0 --draft
+```
+
+This uploads:
+- `build/Reclip.dmg`
+- `build/Reclip.dmg.sha256.txt`
+- `build/Reclip.zip`
+- `build/Reclip.zip.sha256.txt`
+
+The latest stable download URL is:
+- `https://github.com/germanescobar/reclip/releases/latest/download/Reclip.dmg`
+
+## 5) Release Notes
+
 - Add release notes with:
   - version
   - fixes/features
   - known limitations
   - minimum macOS version (14.0+)
 
-## 5) Smoke Test (Before Publishing)
+## 6) Smoke Test (Before Publishing)
 
-- Download zip on a clean macOS user account.
-- Unzip and open the app.
+- Download DMG on a clean macOS user account.
+- Mount DMG and open the app.
 - Confirm no unsigned/notarization warning appears.
 - Confirm recording start/stop and upload workflow.
