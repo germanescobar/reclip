@@ -1,4 +1,5 @@
 .build/
+build/
 LoomClone.xcodeproj/
 LoomClone.xcworkspace/
 *.xcodeproj/*.xcworkspace/
