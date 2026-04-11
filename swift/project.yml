@@ -20,7 +20,6 @@ targets:
       base:
         INFOPLIST_FILE: LoomClone/Info.plist
         CODE_SIGN_ENTITLEMENTS: LoomClone/LoomClone.entitlements
-        DEVELOPMENT_TEAM: KH9G36PM9D
         PRODUCT_BUNDLE_IDENTIFIER: com.germanescobar.Reclip
         CODE_SIGN_IDENTITY: "-"
         PRODUCT_NAME: Reclip

@@ -8,8 +8,7 @@ This checklist prepares and ships the first public macOS release of Reclip.
 - Xcode 16+ and command line tools installed.
 - `xcodegen` installed (`brew install xcodegen`).
 - Bundle ID set to `com.germanescobar.Reclip`.
-- Team configured in `project.yml` as:
-  - `DEVELOPMENT_TEAM: KH9G36PM9D`
+- Team selected locally in Xcode for your own Apple Developer account.
 - `project.yml` signing updated for distribution (not ad-hoc `"-"` identity).
 
 ## 2) One-time Notary Credential Setup
