@@ -50,6 +50,16 @@ Build in Xcode or via command line:
 xcodebuild -project LoomClone.xcodeproj -scheme LoomClone -configuration Debug build
 ```
 
+## Releases
+
+For first-time release setup and notarization, see `docs/FIRST_RELEASE_CHECKLIST.md`.
+
+Once prerequisites are complete, run:
+
+```bash
+./scripts/release.sh
+```
+
 ## Usage
 
 1. Grant camera/microphone permissions when prompted
