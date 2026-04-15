@@ -275,6 +275,11 @@ class RecordingManager: @unchecked Sendable {
         do {
             try cameraCapturer.setupSession(camera: selectedCamera, microphone: selectedMicrophone)
 
+            // Start the session synchronously so startRunning() completes
+            // before the preview layer connects — prevents the race between
+            // startRunning()'s internal enumeration and previewLayer.session assignment.
+            cameraCapturer.startCapture(waitUntilRunning: true)
+
             if let screen = Self.screen(for: display?.displayID) ?? Self.preferredScreen() {
                 await MainActor.run {
                     floatingCameraWindowController.onNormalizedCenterChanged = { [weak self] normalizedCenter in
@@ -287,10 +292,6 @@ class RecordingManager: @unchecked Sendable {
                     )
                 }
             }
-
-            // Start capture after the preview layer is connected to avoid
-            // racing session.startRunning() against previewLayer.session assignment.
-            cameraCapturer.startCapture()
         } catch {
             state = .error("Failed to show camera preview: \(error.localizedDescription)")
         }
@@ -384,8 +385,10 @@ class RecordingManager: @unchecked Sendable {
             // Start screen capture
             try await screenCapturer.startCapture(display: display)
 
-            // Connect the preview layer before starting the camera session
-            // to avoid racing startRunning() against previewLayer.session assignment.
+            // Start the camera session synchronously so startRunning()
+            // completes before the preview layer connects to it.
+            cameraCapturer.startCapture(waitUntilRunning: true)
+
             await MainActor.run {
                 floatingCameraWindowController.onNormalizedCenterChanged = { [weak self] normalizedCenter in
                     self?.updateCameraOverlayPosition(normalizedCenter)
@@ -396,8 +399,6 @@ class RecordingManager: @unchecked Sendable {
                     normalizedCenter: cameraOverlayPosition
                 )
             }
-
-            cameraCapturer.startCapture()
 
             // Start duration timer
             startTime = Date()

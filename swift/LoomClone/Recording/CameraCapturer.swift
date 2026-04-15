@@ -148,10 +148,16 @@ class CameraCapturer: NSObject, @unchecked Sendable {
         }
     }
 
-    func startCapture() {
-        sessionQueue.async {
+    func startCapture(waitUntilRunning: Bool = false) {
+        let startWork = {
             guard !self.session.isRunning else { return }
             self.session.startRunning()
+        }
+
+        if waitUntilRunning {
+            sessionQueue.sync(execute: startWork)
+        } else {
+            sessionQueue.async(execute: startWork)
         }
     }
 
