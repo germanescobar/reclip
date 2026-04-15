@@ -1,6 +1,7 @@
 import SwiftUI
 import ScreenCaptureKit
 import AVFoundation
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Bindable var manager: RecordingManager
@@ -11,6 +12,7 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var recordingTitle = ""
     @State private var recordingDescription = ""
+    @State private var savedLocalURL: URL?
 
     var body: some View {
         Group {
@@ -83,6 +85,11 @@ struct ContentView: View {
             await manager.prepare()
             syncLocalSelections()
         }
+        .onChange(of: manager.state) { _, newState in
+            if case .idle = newState {
+                savedLocalURL = nil
+            }
+        }
         .onChange(of: selectedDisplay?.displayID) { _, _ in
             manager.selectedDisplayID = selectedDisplay?.displayID
         }
@@ -129,7 +136,10 @@ struct ContentView: View {
 
                 if manager.canRequestScreenPermission && !manager.screenPermissionGranted {
                     Button("Request Screen Recording Access") {
-                        manager.beginScreenRecordingPermissionFlow()
+                        Task {
+                            await manager.beginScreenRecordingPermissionFlow()
+                            syncLocalSelections()
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -155,7 +165,10 @@ struct ContentView: View {
 
             Button("Refresh Permission Status") {
                 Task {
-                    await manager.prepare()
+                    await manager.refreshPermissionStatusAsync()
+                    if manager.permissionsReady {
+                        await manager.loadDisplays()
+                    }
                     syncLocalSelections()
                 }
             }
@@ -281,6 +294,11 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
+                    Button("Save Locally") {
+                        saveRecordingLocally(from: url)
+                    }
+                    .buttonStyle(.bordered)
+
                     Button("Discard") {
                         try? FileManager.default.removeItem(at: url)
                         manager.reset()
@@ -289,9 +307,15 @@ struct ContentView: View {
                     .foregroundStyle(.red)
                 }
 
-                Text(url.lastPathComponent)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let savedLocalURL {
+                    Text("Saved to \(savedLocalURL.path)")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else {
+                    Text(url.lastPathComponent)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if manager.state == .uploading {
@@ -370,6 +394,28 @@ struct ContentView: View {
             return .orange
         default:
             return .secondary
+        }
+    }
+
+    private func saveRecordingLocally(from fileURL: URL) {
+        let panel = NSSavePanel()
+        panel.title = "Save Recording"
+        panel.nameFieldStringValue = recordingTitle.isEmpty
+            ? "recording.mp4"
+            : "\(recordingTitle).mp4"
+        panel.allowedContentTypes = [.mpeg4Movie]
+        panel.canCreateDirectories = true
+
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: fileURL, to: destination)
+            savedLocalURL = destination
+        } catch {
+            manager.state = .error("Failed to save: \(error.localizedDescription)")
         }
     }
 

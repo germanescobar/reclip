@@ -167,7 +167,7 @@ class RecordingManager: @unchecked Sendable {
     }
 
     func prepare() async {
-        refreshPermissionStatus()
+        await refreshPermissionStatusAsync()
         loadDevices()
 
         if permissionsReady {
@@ -187,6 +187,20 @@ class RecordingManager: @unchecked Sendable {
         }
     }
 
+    /// Re-checks screen recording permission using a real ScreenCaptureKit probe
+    /// instead of the potentially stale `CGPreflightScreenCaptureAccess`.
+    func refreshPermissionStatusAsync() async {
+        cameraPermissionGranted = cameraCapturer.hasCameraPermission()
+        microphonePermissionGranted = cameraCapturer.hasMicrophonePermission()
+
+        let probeResult = await screenCapturer.probeScreenRecordingPermission()
+        screenPermissionGranted = probeResult
+
+        if probeResult {
+            needsAppRestart = false
+        }
+    }
+
     func requestCameraAndMicrophonePermissions() async {
         _ = await cameraCapturer.requestCameraPermission()
         _ = await cameraCapturer.requestMicrophonePermission()
@@ -194,11 +208,20 @@ class RecordingManager: @unchecked Sendable {
         loadDevices()
     }
 
-    func beginScreenRecordingPermissionFlow() {
+    func beginScreenRecordingPermissionFlow() async {
         let screenWasGranted = screenPermissionGranted
         let didGrantImmediately = screenCapturer.requestScreenRecordingPermission()
-        refreshPermissionStatus()
-        needsAppRestart = !screenWasGranted && (didGrantImmediately || screenPermissionGranted)
+        // Use the real probe to check if macOS has already applied the permission,
+        // avoiding an unnecessary restart when the binary hasn't changed.
+        await refreshPermissionStatusAsync()
+
+        if screenPermissionGranted {
+            needsAppRestart = false
+        } else if !screenWasGranted && didGrantImmediately {
+            // CGRequestScreenCaptureAccess returned true but the probe failed —
+            // macOS likely needs an app restart to activate the permission.
+            needsAppRestart = true
+        }
     }
 
     func openScreenRecordingSettings() {
@@ -251,7 +274,11 @@ class RecordingManager: @unchecked Sendable {
 
         do {
             try cameraCapturer.setupSession(camera: selectedCamera, microphone: selectedMicrophone)
-            cameraCapturer.startCapture()
+
+            // Start the session synchronously so startRunning() completes
+            // before the preview layer connects — prevents the race between
+            // startRunning()'s internal enumeration and previewLayer.session assignment.
+            cameraCapturer.startCapture(waitUntilRunning: true)
 
             if let screen = Self.screen(for: display?.displayID) ?? Self.preferredScreen() {
                 await MainActor.run {
@@ -355,9 +382,12 @@ class RecordingManager: @unchecked Sendable {
             self.videoInput = videoInput
             self.audioInput = audioInput
 
-            // Start capturing
+            // Start screen capture
             try await screenCapturer.startCapture(display: display)
-            cameraCapturer.startCapture()
+
+            // Start the camera session synchronously so startRunning()
+            // completes before the preview layer connects to it.
+            cameraCapturer.startCapture(waitUntilRunning: true)
 
             await MainActor.run {
                 floatingCameraWindowController.onNormalizedCenterChanged = { [weak self] normalizedCenter in
@@ -761,7 +791,7 @@ class RecordingManager: @unchecked Sendable {
             }
 
             isRunningMicrophoneCheck = false
-            restorePreviewIfVisible()
+            await MainActor.run { restorePreviewIfVisible() }
             return didDetect
         } catch {
             if !isRecording {
@@ -773,7 +803,7 @@ class RecordingManager: @unchecked Sendable {
                 microphoneLevel = 0
             }
             isRunningMicrophoneCheck = false
-            restorePreviewIfVisible()
+            await MainActor.run { restorePreviewIfVisible() }
             return false
         }
     }
