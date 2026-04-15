@@ -136,7 +136,10 @@ struct ContentView: View {
 
                 if manager.canRequestScreenPermission && !manager.screenPermissionGranted {
                     Button("Request Screen Recording Access") {
-                        manager.beginScreenRecordingPermissionFlow()
+                        Task {
+                            await manager.beginScreenRecordingPermissionFlow()
+                            syncLocalSelections()
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -162,7 +165,10 @@ struct ContentView: View {
 
             Button("Refresh Permission Status") {
                 Task {
-                    await manager.prepare()
+                    await manager.refreshPermissionStatusAsync()
+                    if manager.permissionsReady {
+                        await manager.loadDisplays()
+                    }
                     syncLocalSelections()
                 }
             }

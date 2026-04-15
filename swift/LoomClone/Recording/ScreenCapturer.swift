@@ -18,6 +18,18 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         CGPreflightScreenCaptureAccess()
     }
 
+    /// Attempts to actually fetch shareable content as a ground-truth permission check.
+    /// `CGPreflightScreenCaptureAccess` can return stale results, especially during
+    /// development when the binary is rebuilt frequently.
+    func probeScreenRecordingPermission() async -> Bool {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            return !content.displays.isEmpty
+        } catch {
+            return false
+        }
+    }
+
     @discardableResult
     func requestScreenRecordingPermission() -> Bool {
         CGRequestScreenCaptureAccess()
