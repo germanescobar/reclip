@@ -2,6 +2,12 @@
 
 A Loom-like screen recording application with a native macOS client and a Next.js web app.
 
+## Getting Started
+
+1. Sign up at [reclip.click](https://reclip.click)
+2. Download the latest release from the [Releases](https://github.com/germanescobar/reclip/releases) page
+3. Open the app and sign in with your account
+
 ## Project Structure
 
 ```
