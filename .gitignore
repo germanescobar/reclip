@@ -1,5 +1,6 @@
 # macOS
 .DS_Store
+.coding-agent
 
 # Swift / Xcode
 swift/.build/
