@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var recordingTitle = ""
     @State private var recordingDescription = ""
     @State private var savedLocalURL: URL?
+    @FocusState private var isTitleFocused: Bool
 
     var body: some View {
         Group {
@@ -88,6 +89,9 @@ struct ContentView: View {
         .onChange(of: manager.state) { _, newState in
             if case .idle = newState {
                 savedLocalURL = nil
+            }
+            if case .saved = newState {
+                isTitleFocused = true
             }
         }
         .onChange(of: selectedDisplay?.displayID) { _, _ in
@@ -254,6 +258,7 @@ struct ContentView: View {
                     .disabled(manager.microphoneCheckState == .checking || manager.state == .preparing)
                 }
                 .frame(width: 250, alignment: .leading)
+
             }
 
             Button(action: { Task { await toggleRecording() } }) {
@@ -281,6 +286,7 @@ struct ContentView: View {
                     TextField("Title", text: $recordingTitle)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 250)
+                        .focused($isTitleFocused)
 
                     TextField("Description (optional)", text: $recordingDescription)
                         .textFieldStyle(.roundedBorder)

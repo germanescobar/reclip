@@ -40,7 +40,7 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         return content.displays
     }
 
-    func startCapture(display: SCDisplay) async throws {
+    func startCapture(display: SCDisplay, captureSystemAudio: Bool = false) async throws {
         width = display.width
         height = display.height
 
@@ -51,16 +51,20 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         config.height = height
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.pixelFormat = kCVPixelFormatType_32BGRA
-        config.capturesAudio = true
-        config.sampleRate = 48000
-        config.channelCount = 2
+        config.capturesAudio = captureSystemAudio
+        if captureSystemAudio {
+            config.sampleRate = 48000
+            config.channelCount = 2
+        }
         config.showsCursor = true
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         self.stream = stream
 
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
-        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
+        if captureSystemAudio {
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
+        }
 
         try await stream.startCapture()
     }

@@ -64,6 +64,26 @@ enum MicrophoneCheckState: Equatable {
     }
 }
 
+enum RecordingAudioStatus: Equatable {
+    case idle
+    case waiting(String)
+    case live(String)
+    case validated(String)
+    case failed(String)
+
+    var displayText: String {
+        switch self {
+        case .idle:
+            return "Recording audio feedback will appear here."
+        case .waiting(let message),
+             .live(let message),
+             .validated(let message),
+             .failed(let message):
+            return message
+        }
+    }
+}
+
 @Observable
 class RecordingManager: @unchecked Sendable {
     private enum BufferedSampleKind {
@@ -71,19 +91,19 @@ class RecordingManager: @unchecked Sendable {
         case audio
     }
 
-    private enum AudioSource {
-        case system
-        case mic
-    }
-
     var state: RecordingState = .idle {
         didSet {
             onStateChanged?(state)
             onRecordingChanged?(isRecording)
+            onRecordingMetricsChanged?()
         }
     }
     var uploadProgress: Double = 0
-    var recordingDuration: TimeInterval = 0
+    var recordingDuration: TimeInterval = 0 {
+        didSet {
+            onRecordingMetricsChanged?()
+        }
+    }
     var availableDisplays: [SCDisplay] = []
     var availableCameras: [AVCaptureDevice] = []
     var availableMicrophones: [AVCaptureDevice] = []
@@ -94,6 +114,12 @@ class RecordingManager: @unchecked Sendable {
     var cameraOverlayPosition = CGPoint(x: 0.85, y: 0.2)
     var microphoneCheckState: MicrophoneCheckState = .idle
     var microphoneLevel: Double = 0
+    var recordingAudioStatus: RecordingAudioStatus = .idle {
+        didSet {
+            onRecordingMetricsChanged?()
+        }
+    }
+    var recordingAudioLevel: Double = 0
     var selectedDisplayID: CGDirectDisplayID?
     var selectedCameraID: String? {
         didSet {
@@ -102,12 +128,14 @@ class RecordingManager: @unchecked Sendable {
     }
     var selectedMicrophoneID: String? {
         didSet {
+            invalidateMicrophoneCheck()
             refreshPreviewCaptureDevicesIfNeeded()
         }
     }
     @ObservationIgnored var onRecordingChanged: ((Bool) -> Void)?
     @ObservationIgnored var onStateChanged: ((RecordingState) -> Void)?
     @ObservationIgnored var onDisplaysLoaded: (() -> Void)?
+    @ObservationIgnored var onRecordingMetricsChanged: (() -> Void)?
 
     let screenCapturer = ScreenCapturer()
     let cameraCapturer = CameraCapturer()
@@ -126,10 +154,10 @@ class RecordingManager: @unchecked Sendable {
     private var durationTimer: Timer?
     private var pendingScreenSamples: [CMSampleBuffer] = []
     private var pendingAudioSamples: [CMSampleBuffer] = []
-    private var selectedAudioSource: AudioSource?
     private var firstScreenPTS: CMTime?
     private var firstAudioPTS: CMTime?
     private var lastVerifiedMicrophoneSignalAt: Date?
+    private var hasWrittenAudioSamples = false
     private var isRunningMicrophoneCheck = false
     @ObservationIgnored private var previewRefreshTask: Task<Void, Never>?
 
@@ -164,6 +192,10 @@ class RecordingManager: @unchecked Sendable {
     var selectedMicrophone: AVCaptureDevice? {
         guard let selectedMicrophoneID else { return availableMicrophones.first }
         return availableMicrophones.first { $0.uniqueID == selectedMicrophoneID } ?? availableMicrophones.first
+    }
+
+    var selectedMicrophoneName: String {
+        selectedMicrophone?.localizedName ?? "the selected microphone"
     }
 
     func prepare() async {
@@ -273,12 +305,12 @@ class RecordingManager: @unchecked Sendable {
         }
 
         do {
-            try cameraCapturer.setupSession(camera: selectedCamera, microphone: selectedMicrophone)
-
-            // Start the session synchronously so startRunning() completes
-            // before the preview layer connects — prevents the race between
-            // startRunning()'s internal enumeration and previewLayer.session assignment.
-            cameraCapturer.startCapture(waitUntilRunning: true)
+            try restartCameraSession(
+                camera: selectedCamera,
+                microphone: selectedMicrophone,
+                includeCamera: true,
+                includeMicrophone: true
+            )
 
             if let screen = Self.screen(for: display?.displayID) ?? Self.preferredScreen() {
                 await MainActor.run {
@@ -318,6 +350,7 @@ class RecordingManager: @unchecked Sendable {
         durationTimer = nil
         recordingDuration = 0
         resetWriterState()
+        resetRecordingAudioFeedback()
         compositor.reset()
         compositor.overlayNormalizedCenter = cameraOverlayPosition
 
@@ -345,7 +378,12 @@ class RecordingManager: @unchecked Sendable {
                 return
             }
 
-            try cameraCapturer.setupSession(camera: selectedCamera, microphone: selectedMicrophone)
+            try restartCameraSession(
+                camera: selectedCamera,
+                microphone: selectedMicrophone,
+                includeCamera: true,
+                includeMicrophone: true
+            )
 
             // Setup output file
             let outputURL = FileManager.default.temporaryDirectory
@@ -383,11 +421,15 @@ class RecordingManager: @unchecked Sendable {
             self.audioInput = audioInput
 
             // Start screen capture
-            try await screenCapturer.startCapture(display: display)
+            try await screenCapturer.startCapture(display: display, captureSystemAudio: false)
 
             // Start the camera session synchronously so startRunning()
             // completes before the preview layer connects to it.
             cameraCapturer.startCapture(waitUntilRunning: true)
+
+            await MainActor.run {
+                recordingAudioStatus = .waiting("Waiting for microphone audio from \(selectedMicrophoneName)...")
+            }
 
             await MainActor.run {
                 floatingCameraWindowController.onNormalizedCenterChanged = { [weak self] normalizedCenter in
@@ -461,6 +503,7 @@ class RecordingManager: @unchecked Sendable {
         }
 
         // Cleanup
+        await validateSavedRecordingAudio(at: outputURL)
         assetWriter = nil
         videoInput = nil
         audioInput = nil
@@ -504,9 +547,8 @@ class RecordingManager: @unchecked Sendable {
         state = .idle
         recordingDuration = 0
         uploadProgress = 0
-        microphoneCheckState = .idle
-        microphoneLevel = 0
-        lastVerifiedMicrophoneSignalAt = nil
+        invalidateMicrophoneCheck()
+        resetRecordingAudioFeedback()
         refreshPermissionStatus()
         resetWriterState()
         compositor.reset()
@@ -542,28 +584,21 @@ class RecordingManager: @unchecked Sendable {
     }
 
     private func handleSystemAudio(_ sampleBuffer: CMSampleBuffer) {
-        handleAudioSample(sampleBuffer, source: .system)
+        _ = sampleBuffer
     }
 
     private func handleMicAudio(_ sampleBuffer: CMSampleBuffer) {
         updateMicrophoneMonitoring(with: sampleBuffer)
-        handleAudioSample(sampleBuffer, source: .mic)
+        handleAudioSample(sampleBuffer)
     }
 
-    private func handleAudioSample(_ sampleBuffer: CMSampleBuffer, source: AudioSource) {
+    private func handleAudioSample(_ sampleBuffer: CMSampleBuffer) {
         writerQueue.async { [weak self] in
             guard let self,
                   let writer = self.assetWriter,
                   let input = self.audioInput else { return }
 
             guard writer.status != .failed, writer.status != .cancelled else { return }
-
-            if let selectedAudioSource = self.selectedAudioSource {
-                guard selectedAudioSource == source else { return }
-            } else {
-                // Prefer system audio when available; otherwise fall back to mic.
-                self.selectedAudioSource = source
-            }
 
             if self.firstAudioPTS == nil {
                 self.firstAudioPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -581,21 +616,16 @@ class RecordingManager: @unchecked Sendable {
 
     private func tryStartSessionIfReady(writer: AVAssetWriter) {
         guard !sessionStarted else { return }
-        guard let firstScreen = pendingScreenSamples.first,
-              let firstAudio = pendingAudioSamples.first else {
+        guard let firstScreen = pendingScreenSamples.first else {
             return
         }
 
         let screenPTS = CMSampleBufferGetPresentationTimeStamp(firstScreen)
-        let audioPTS = CMSampleBufferGetPresentationTimeStamp(firstAudio)
-
-        // Use the later of the two so both streams have valid data from the start
-        let startTime = screenPTS > audioPTS ? screenPTS : audioPTS
 
         guard writer.startWriting() else { return }
-        writer.startSession(atSourceTime: startTime)
+        writer.startSession(atSourceTime: screenPTS)
         sessionStarted = true
-        sessionStartTime = startTime
+        sessionStartTime = screenPTS
 
         flushPendingSamples(writer: writer)
     }
@@ -639,16 +669,14 @@ class RecordingManager: @unchecked Sendable {
     private func appendAudioSample(_ sampleBuffer: CMSampleBuffer, writer: AVAssetWriter, input: AVAssetWriterInput) {
         guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
 
-        // System audio from SCStream shares the same clock as screen frames,
-        // so no retiming is needed. Only mic audio (from AVCaptureSession) needs
-        // to be aligned to the screen timeline.
-        if selectedAudioSource == .system {
-            input.append(sampleBuffer)
-            return
-        }
-
         guard let retimedSample = retimedMicSampleBuffer(sampleBuffer) else { return }
-        input.append(retimedSample)
+        guard input.append(retimedSample) else { return }
+
+        hasWrittenAudioSamples = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.recordingAudioStatus = .live("Recording microphone audio from \(self.selectedMicrophoneName).")
+        }
     }
 
     private func retimedMicSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
@@ -700,9 +728,9 @@ class RecordingManager: @unchecked Sendable {
         sessionStartTime = nil
         pendingScreenSamples.removeAll()
         pendingAudioSamples.removeAll()
-        selectedAudioSource = nil
         firstScreenPTS = nil
         firstAudioPTS = nil
+        hasWrittenAudioSamples = false
     }
 
     private func configureCaptureCallbacks() {
@@ -756,12 +784,11 @@ class RecordingManager: @unchecked Sendable {
         }
 
         do {
-            try cameraCapturer.setupSession(
+            try restartCameraSession(
                 microphone: selectedMicrophone,
                 includeCamera: false,
                 includeMicrophone: true
             )
-            cameraCapturer.startCapture()
 
             let timeoutAt = Date().addingTimeInterval(3)
             var detected = false
@@ -811,13 +838,26 @@ class RecordingManager: @unchecked Sendable {
     private func updateMicrophoneMonitoring(with sampleBuffer: CMSampleBuffer) {
         guard let level = audioLevel(from: sampleBuffer) else { return }
 
-        let detectionThreshold = 0.015
+        let detectionThreshold = 0.006
         if level >= detectionThreshold {
             lastVerifiedMicrophoneSignalAt = Date()
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.microphoneLevel = min(max(level * 6, 0), 1)
+            guard let self else { return }
+
+            let normalizedLevel = self.normalizedDisplayLevel(from: level)
+            self.microphoneLevel = self.smoothedMeterLevel(current: self.microphoneLevel, incoming: normalizedLevel)
+
+            if self.assetWriter != nil {
+                self.recordingAudioLevel = self.smoothedMeterLevel(
+                    current: self.recordingAudioLevel,
+                    incoming: normalizedLevel
+                )
+                if level >= detectionThreshold {
+                    self.recordingAudioStatus = .live("Recording microphone audio from \(self.selectedMicrophoneName).")
+                }
+            }
         }
     }
 
@@ -926,10 +966,13 @@ class RecordingManager: @unchecked Sendable {
             return
         }
 
-        guard cameraCapturer.session.isRunning else { return }
-
         do {
-            try cameraCapturer.setupSession(camera: selectedCamera, microphone: selectedMicrophone)
+            try restartCameraSession(
+                camera: selectedCamera,
+                microphone: selectedMicrophone,
+                includeCamera: true,
+                includeMicrophone: true
+            )
         } catch {
             state = .error("Failed to switch capture device: \(error.localizedDescription)")
         }
@@ -956,6 +999,99 @@ class RecordingManager: @unchecked Sendable {
         }
         if selectedMicrophoneID == nil || !availableMicrophones.contains(where: { $0.uniqueID == selectedMicrophoneID }) {
             selectedMicrophoneID = availableMicrophones.first?.uniqueID
+        }
+    }
+
+    private func invalidateMicrophoneCheck() {
+        microphoneCheckState = .idle
+        microphoneLevel = 0
+        lastVerifiedMicrophoneSignalAt = nil
+    }
+
+    private func resetRecordingAudioFeedback() {
+        recordingAudioStatus = .idle
+        recordingAudioLevel = 0
+    }
+
+    private func normalizedDisplayLevel(from rawLevel: Double) -> Double {
+        let noiseFloor = 0.005
+        let fullScaleLevel = 0.10
+
+        guard rawLevel > noiseFloor else { return 0 }
+
+        let normalized = min(max((rawLevel - noiseFloor) / (fullScaleLevel - noiseFloor), 0), 1)
+        return pow(normalized, 0.5)
+    }
+
+    private func smoothedMeterLevel(current: Double, incoming: Double) -> Double {
+        let attack: Double = 0.35
+        let release: Double = 0.18
+        let factor = incoming > current ? attack : release
+        return (current * (1 - factor)) + (incoming * factor)
+    }
+
+    private func restartCameraSession(
+        camera: AVCaptureDevice? = nil,
+        microphone: AVCaptureDevice? = nil,
+        includeCamera: Bool,
+        includeMicrophone: Bool
+    ) throws {
+        if cameraCapturer.session.isRunning {
+            cameraCapturer.stopCapture(waitUntilStopped: true)
+        }
+
+        try cameraCapturer.setupSession(
+            camera: camera,
+            microphone: microphone,
+            includeCamera: includeCamera,
+            includeMicrophone: includeMicrophone
+        )
+
+        // Start synchronously so the session is fully running before the
+        // preview or recorder relies on the newly selected device.
+        cameraCapturer.startCapture(waitUntilRunning: true)
+    }
+
+    private func validateSavedRecordingAudio(at url: URL) async {
+        let asset = AVURLAsset(url: url)
+
+        let audioTracks: [AVAssetTrack]
+        do {
+            audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        } catch {
+            await MainActor.run {
+                recordingAudioStatus = .failed("Saved video, but audio validation failed: \(error.localizedDescription)")
+            }
+            return
+        }
+
+        guard !audioTracks.isEmpty else {
+            await MainActor.run {
+                recordingAudioStatus = .failed("Saved video, but no audio track was found.")
+            }
+            return
+        }
+
+        var hasUsableAudio = false
+        for track in audioTracks {
+            guard let timeRange = try? await track.load(.timeRange) else { continue }
+            let duration = timeRange.duration.seconds
+            if duration.isFinite && duration > 0.1 {
+                hasUsableAudio = true
+                break
+            }
+        }
+
+        let validatedAudioTrack = hasUsableAudio
+
+        await MainActor.run {
+            if validatedAudioTrack && hasWrittenAudioSamples {
+                recordingAudioStatus = .validated("Saved video includes microphone audio from \(selectedMicrophoneName).")
+            } else if validatedAudioTrack {
+                recordingAudioStatus = .validated("Saved video includes an audio track.")
+            } else {
+                recordingAudioStatus = .failed("Saved video, but the audio track looks empty.")
+            }
         }
     }
 }

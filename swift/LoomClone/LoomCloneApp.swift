@@ -7,13 +7,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
+    private let recordingHUDWindowController = RecordingHUDWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         manager.onRecordingChanged = { [weak self] isRecording in
             DispatchQueue.main.async {
-                self?.updateStatusItemIcon(isRecording: isRecording)
+                self?.updateStatusItemAppearance(isRecording: isRecording)
+                self?.updateRecordingHUD()
             }
         }
         manager.onStateChanged = { [weak self] state in
@@ -22,10 +24,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 self?.closePopover()
             }
         }
+        manager.onRecordingMetricsChanged = { [weak self] in
+            DispatchQueue.main.async {
+                self?.updateStatusItemAppearance(isRecording: self?.manager.isRecording == true)
+                self?.updateRecordingHUD()
+            }
+        }
 
         configureStatusItem()
         configurePopover()
-        updateStatusItemIcon(isRecording: manager.isRecording)
+        updateStatusItemAppearance(isRecording: manager.isRecording)
         manager.onDisplaysLoaded = { [weak self] in
             self?.refreshCameraPreview()
         }
@@ -48,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover(_:))
-            button.imagePosition = .imageOnly
+            button.imagePosition = .imageLeading
         }
     }
 
@@ -75,12 +83,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.performClose(nil)
     }
 
-    private func updateStatusItemIcon(isRecording: Bool) {
+    private func updateStatusItemAppearance(isRecording: Bool) {
         let imageName = isRecording ? "record.circle.fill" : "record.circle"
-        statusItem.button?.image = NSImage(
+        guard let button = statusItem.button else { return }
+
+        button.image = NSImage(
             systemSymbolName: imageName,
             accessibilityDescription: "Reclip"
         )
+
+        if isRecording {
+            button.title = ""
+            button.toolTip = "Recording in progress"
+        } else {
+            button.title = ""
+            button.toolTip = "Reclip"
+        }
     }
 
     private func refreshCameraPreview() {
@@ -89,6 +107,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             await manager.showCameraPreview(for: manager.selectedDisplay)
         }
     }
+
+    private func updateRecordingHUD() {
+        guard manager.isRecording else {
+            if recordingHUDWindowController.isVisible {
+                recordingHUDWindowController.hide()
+                showPopover(nil)
+            }
+            return
+        }
+
+        guard let screen = screenForCurrentRecording() else {
+            recordingHUDWindowController.hide()
+            return
+        }
+
+        recordingHUDWindowController.show(
+            on: screen,
+            durationText: statusItemDurationText(),
+            audioLevel: manager.recordingAudioLevel
+        ) { [weak self] in
+            Task {
+                await self?.manager.stopRecording()
+            }
+        }
+    }
+
+    private func screenForCurrentRecording() -> NSScreen? {
+        guard let displayID = manager.selectedDisplay?.displayID else {
+            return NSScreen.main ?? NSScreen.screens.first
+        }
+
+        return NSScreen.screens.first { screen in
+            guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return false
+            }
+            return screenNumber.uint32Value == displayID
+        } ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    private func statusItemDurationText() -> String {
+        let mins = Int(manager.recordingDuration) / 60
+        let secs = Int(manager.recordingDuration) % 60
+        return String(format: "%02d:%02d", mins, secs)
+    }
+
 
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
