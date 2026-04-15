@@ -73,8 +73,10 @@ class CameraCapturer: NSObject, @unchecked Sendable {
                 session.beginConfiguration()
                 defer { session.commitConfiguration() }
 
-                // Remove existing inputs
-                for input in session.inputs {
+                // Remove existing inputs one at a time to avoid
+                // "mutated while being enumerated" when the preview layer
+                // concurrently accesses the session's internal arrays.
+                while let input = session.inputs.first {
                     session.removeInput(input)
                 }
 
