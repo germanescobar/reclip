@@ -261,25 +261,42 @@ struct ContentView: View {
 
             }
 
-            Button(action: { Task { await toggleRecording() } }) {
-                ZStack {
-                    Circle()
-                        .fill(manager.isRecording ? Color.red.opacity(0.2) : Color.gray.opacity(0.1))
-                        .frame(width: 72, height: 72)
-
-                    if manager.isRecording {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(.red)
-                            .frame(width: 24, height: 24)
-                    } else {
+            HStack(spacing: 16) {
+                Button(action: { Task { await toggleRecording() } }) {
+                    ZStack {
                         Circle()
-                            .fill(.red)
-                            .frame(width: 52, height: 52)
+                            .fill((manager.isRecording || manager.isPaused) ? Color.red.opacity(0.2) : Color.gray.opacity(0.1))
+                            .frame(width: 72, height: 72)
+
+                        if manager.isRecording || manager.isPaused {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(.red)
+                                .frame(width: 24, height: 24)
+                        } else {
+                            Circle()
+                                .fill(.red)
+                                .frame(width: 52, height: 52)
+                        }
                     }
                 }
+                .buttonStyle(.plain)
+                .disabled(manager.state == .preparing || manager.state == .stopping)
+
+                if manager.isRecording || manager.isPaused {
+                    Button(action: { togglePause() }) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.gray.opacity(0.1))
+                                .frame(width: 52, height: 52)
+
+                            Image(systemName: manager.isPaused ? "play.fill" : "pause.fill")
+                                .font(.title2)
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
-            .disabled(manager.state == .preparing || manager.state == .stopping)
 
             if case .saved(let url) = manager.state {
                 VStack(spacing: 8) {
@@ -426,7 +443,7 @@ struct ContentView: View {
     }
 
     private func toggleRecording() async {
-        if manager.isRecording {
+        if manager.isRecording || manager.isPaused {
             await manager.stopRecording()
         } else {
             guard let display = selectedDisplay ?? manager.availableDisplays.first else {
@@ -434,6 +451,14 @@ struct ContentView: View {
                 return
             }
             await manager.startRecording(display: display)
+        }
+    }
+
+    private func togglePause() {
+        if manager.isPaused {
+            manager.resumeRecording()
+        } else {
+            manager.pauseRecording()
         }
     }
 }

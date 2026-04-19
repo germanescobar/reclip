@@ -84,7 +84,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func updateStatusItemAppearance(isRecording: Bool) {
-        let imageName = isRecording ? "record.circle.fill" : "record.circle"
+        let isPaused = manager.isPaused
+        let imageName: String
+        if isPaused {
+            imageName = "pause.circle.fill"
+        } else if isRecording {
+            imageName = "record.circle.fill"
+        } else {
+            imageName = "record.circle"
+        }
         guard let button = statusItem.button else { return }
 
         button.image = NSImage(
@@ -92,7 +100,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             accessibilityDescription: "Reclip"
         )
 
-        if isRecording {
+        if isPaused {
+            button.title = ""
+            button.toolTip = "Recording paused"
+        } else if isRecording {
             button.title = ""
             button.toolTip = "Recording in progress"
         } else {
@@ -109,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func updateRecordingHUD() {
-        guard manager.isRecording else {
+        guard manager.isRecording || manager.isPaused else {
             if recordingHUDWindowController.isVisible {
                 recordingHUDWindowController.hide()
                 showPopover(nil)
@@ -125,12 +136,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         recordingHUDWindowController.show(
             on: screen,
             durationText: statusItemDurationText(),
-            audioLevel: manager.recordingAudioLevel
-        ) { [weak self] in
-            Task {
-                await self?.manager.stopRecording()
+            audioLevel: manager.recordingAudioLevel,
+            isPaused: manager.isPaused,
+            onStop: { [weak self] in
+                Task {
+                    await self?.manager.stopRecording()
+                }
+            },
+            onPause: { [weak self] in
+                guard let self else { return }
+                if self.manager.isPaused {
+                    self.manager.resumeRecording()
+                } else {
+                    self.manager.pauseRecording()
+                }
             }
-        }
+        )
     }
 
     private func screenForCurrentRecording() -> NSScreen? {

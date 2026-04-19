@@ -2,7 +2,7 @@ import AppKit
 
 final class RecordingHUDWindowController: NSObject, NSWindowDelegate {
     private enum Layout {
-        static let size = CGSize(width: 74, height: 188)
+        static let size = CGSize(width: 74, height: 226)
         static let topInset: CGFloat = 28
         static let trailingInset: CGFloat = 28
     }
@@ -20,7 +20,9 @@ final class RecordingHUDWindowController: NSObject, NSWindowDelegate {
         on screen: NSScreen,
         durationText: String,
         audioLevel: Double,
-        onStop: @escaping () -> Void
+        isPaused: Bool,
+        onStop: @escaping () -> Void,
+        onPause: @escaping () -> Void
     ) {
         displayFrame = screen.visibleFrame
 
@@ -28,7 +30,9 @@ final class RecordingHUDWindowController: NSObject, NSWindowDelegate {
         contentView.update(
             durationText: durationText,
             audioLevel: audioLevel,
-            onStop: onStop
+            isPaused: isPaused,
+            onStop: onStop,
+            onPause: onPause
         )
         panel.setFrame(panelFrame(), display: true)
         panel.orderFrontRegardless()
@@ -115,9 +119,11 @@ private final class RecordingHUDContentView: NSView {
     private let dragHandle = DragHandleView()
     private let timerLabel = NSTextField(labelWithString: "00:00")
     private let levelView = AudioLevelView(frame: .zero)
+    private let pauseButton = NSButton()
     private let stopButton = NSButton()
 
     private var stopAction: (() -> Void)?
+    private var pauseAction: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -134,23 +140,36 @@ private final class RecordingHUDContentView: NSView {
         backgroundView.frame = bounds
         dragHandle.frame = CGRect(x: 19, y: bounds.height - 20, width: bounds.width - 38, height: 8)
         timerLabel.frame = CGRect(x: 10, y: bounds.height - 48, width: bounds.width - 20, height: 18)
-        levelView.frame = CGRect(x: 19, y: 62, width: bounds.width - 38, height: 64)
+        levelView.frame = CGRect(x: 19, y: 100, width: bounds.width - 38, height: 64)
+        pauseButton.frame = CGRect(x: 17, y: 52, width: bounds.width - 34, height: 34)
         stopButton.frame = CGRect(x: 17, y: 14, width: bounds.width - 34, height: 34)
     }
 
     func update(
         durationText: String,
         audioLevel: Double,
-        onStop: @escaping () -> Void
+        isPaused: Bool,
+        onStop: @escaping () -> Void,
+        onPause: @escaping () -> Void
     ) {
-        timerLabel.stringValue = durationText
+        timerLabel.stringValue = isPaused ? "PAUSED" : durationText
+        timerLabel.textColor = isPaused ? .systemOrange : .white
         levelView.level = audioLevel
         stopAction = onStop
+        pauseAction = onPause
+        pauseButton.image = NSImage(
+            systemSymbolName: isPaused ? "play.fill" : "pause.fill",
+            accessibilityDescription: isPaused ? "Resume recording" : "Pause recording"
+        )
         needsLayout = true
     }
 
     @objc private func stopButtonPressed() {
         stopAction?()
+    }
+
+    @objc private func pauseButtonPressed() {
+        pauseAction?()
     }
 
     private func setupView() {
@@ -176,6 +195,19 @@ private final class RecordingHUDContentView: NSView {
 
         levelView.wantsLayer = true
         addSubview(levelView)
+
+        pauseButton.title = ""
+        pauseButton.isBordered = false
+        pauseButton.bezelStyle = .regularSquare
+        pauseButton.image = NSImage(systemSymbolName: "pause.fill", accessibilityDescription: "Pause recording")
+        pauseButton.contentTintColor = .white
+        pauseButton.target = self
+        pauseButton.action = #selector(pauseButtonPressed)
+        pauseButton.wantsLayer = true
+        pauseButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.2).cgColor
+        pauseButton.layer?.cornerRadius = 17
+        pauseButton.imageScaling = .scaleProportionallyDown
+        addSubview(pauseButton)
 
         stopButton.title = ""
         stopButton.isBordered = false

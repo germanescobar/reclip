@@ -8,6 +8,7 @@ enum RecordingState: Equatable {
     case idle
     case preparing
     case recording
+    case paused
     case stopping
     case saved(URL)
     case uploading
@@ -19,6 +20,7 @@ enum RecordingState: Equatable {
         case .idle: return "Ready to record"
         case .preparing: return "Preparing..."
         case .recording: return "Recording"
+        case .paused: return "Paused"
         case .stopping: return "Stopping..."
         case .saved: return "Recording saved"
         case .uploading: return "Uploading..."
@@ -30,7 +32,7 @@ enum RecordingState: Equatable {
     static func == (lhs: RecordingState, rhs: RecordingState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle), (.preparing, .preparing), (.recording, .recording),
-             (.stopping, .stopping), (.uploading, .uploading):
+             (.paused, .paused), (.stopping, .stopping), (.uploading, .uploading):
             return true
         case (.saved(let a), .saved(let b)):
             return a == b
@@ -158,6 +160,9 @@ class RecordingManager: @unchecked Sendable {
     private var firstAudioPTS: CMTime?
     private var lastVerifiedMicrophoneSignalAt: Date?
     private var hasWrittenAudioSamples = false
+    private var pauseOffset: CMTime = .zero
+    private var lastPauseStart: CMTime?
+    private var pausedWallTime: TimeInterval = 0
     private var isRunningMicrophoneCheck = false
     @ObservationIgnored private var previewRefreshTask: Task<Void, Never>?
 
@@ -169,6 +174,10 @@ class RecordingManager: @unchecked Sendable {
 
     var isRecording: Bool {
         state == .recording
+    }
+
+    var isPaused: Bool {
+        state == .paused
     }
 
     var permissionsReady: Bool {
@@ -461,7 +470,7 @@ class RecordingManager: @unchecked Sendable {
     }
 
     func stopRecording() async {
-        guard state == .recording else { return }
+        guard state == .recording || state == .paused else { return }
         state = .stopping
 
         durationTimer?.invalidate()
@@ -509,6 +518,39 @@ class RecordingManager: @unchecked Sendable {
         audioInput = nil
         resetWriterState()
         compositor.reset()
+    }
+
+    func pauseRecording() {
+        guard state == .recording else { return }
+        state = .paused
+        durationTimer?.invalidate()
+        durationTimer = nil
+        pausedWallTime = recordingDuration
+        lastPauseStart = CMClockGetTime(CMClockGetHostTimeClock())
+    }
+
+    func resumeRecording() {
+        guard state == .paused else { return }
+
+        if let pauseStart = lastPauseStart {
+            let now = CMClockGetTime(CMClockGetHostTimeClock())
+            let gap = CMTimeSubtract(now, pauseStart)
+            pauseOffset = CMTimeAdd(pauseOffset, gap)
+            lastPauseStart = nil
+        }
+
+        let savedWallTime = pausedWallTime
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            guard let startTime = self.startTime else { return }
+            let totalElapsed = Date().timeIntervalSince(startTime)
+            let totalPausedSeconds = CMTimeGetSeconds(self.pauseOffset)
+            self.recordingDuration = max(savedWallTime, totalElapsed - totalPausedSeconds)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        durationTimer = timer
+
+        state = .recording
     }
 
     func uploadRecording(fileURL: URL, title: String? = nil, description: String? = nil) async {
@@ -569,6 +611,8 @@ class RecordingManager: @unchecked Sendable {
 
             guard writer.status != .failed, writer.status != .cancelled else { return }
 
+            if self.state == .paused { return }
+
             if self.firstScreenPTS == nil {
                 self.firstScreenPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             }
@@ -599,6 +643,8 @@ class RecordingManager: @unchecked Sendable {
                   let input = self.audioInput else { return }
 
             guard writer.status != .failed, writer.status != .cancelled else { return }
+
+            if self.state == .paused { return }
 
             if self.firstAudioPTS == nil {
                 self.firstAudioPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
@@ -662,7 +708,8 @@ class RecordingManager: @unchecked Sendable {
             width: screenCapturer.width,
             height: screenCapturer.height
         ) {
-            input.append(composited)
+            let adjusted = adjustForPauseOffset(composited) ?? composited
+            input.append(adjusted)
         }
     }
 
@@ -670,13 +717,55 @@ class RecordingManager: @unchecked Sendable {
         guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
 
         guard let retimedSample = retimedMicSampleBuffer(sampleBuffer) else { return }
-        guard input.append(retimedSample) else { return }
+        let adjusted = adjustForPauseOffset(retimedSample) ?? retimedSample
+        guard input.append(adjusted) else { return }
 
         hasWrittenAudioSamples = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.recordingAudioStatus = .live("Recording microphone audio from \(self.selectedMicrophoneName).")
         }
+    }
+
+    private func adjustForPauseOffset(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+        guard pauseOffset != .zero else { return sampleBuffer }
+
+        let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard sampleCount > 0 else { return sampleBuffer }
+
+        var timingInfo = Array(
+            repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid),
+            count: sampleCount
+        )
+
+        let status = CMSampleBufferGetSampleTimingInfoArray(
+            sampleBuffer,
+            entryCount: sampleCount,
+            arrayToFill: &timingInfo,
+            entriesNeededOut: nil
+        )
+
+        guard status == noErr else { return sampleBuffer }
+
+        let updatedTiming = timingInfo.map { info in
+            CMSampleTimingInfo(
+                duration: info.duration,
+                presentationTimeStamp: CMTimeSubtract(info.presentationTimeStamp, pauseOffset),
+                decodeTimeStamp: info.decodeTimeStamp.isValid ? CMTimeSubtract(info.decodeTimeStamp, pauseOffset) : info.decodeTimeStamp
+            )
+        }
+
+        var adjustedSampleBuffer: CMSampleBuffer?
+        let copyStatus = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: updatedTiming.count,
+            sampleTimingArray: updatedTiming,
+            sampleBufferOut: &adjustedSampleBuffer
+        )
+
+        guard copyStatus == noErr else { return sampleBuffer }
+        return adjustedSampleBuffer
     }
 
     private func retimedMicSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
@@ -731,6 +820,9 @@ class RecordingManager: @unchecked Sendable {
         firstScreenPTS = nil
         firstAudioPTS = nil
         hasWrittenAudioSamples = false
+        pauseOffset = .zero
+        lastPauseStart = nil
+        pausedWallTime = 0
     }
 
     private func configureCaptureCallbacks() {
@@ -863,50 +955,84 @@ class RecordingManager: @unchecked Sendable {
 
     private func audioLevel(from sampleBuffer: CMSampleBuffer) -> Double? {
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription),
-              let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
-            return nil
-        }
-
-        var length = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        let status = CMBlockBufferGetDataPointer(
-            blockBuffer,
-            atOffset: 0,
-            lengthAtOffsetOut: nil,
-            totalLengthOut: &length,
-            dataPointerOut: &dataPointer
-        )
-
-        guard status == kCMBlockBufferNoErr,
-              let dataPointer,
-              length > 0 else {
+              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
             return nil
         }
 
         let asbd = streamDescription.pointee
+        let bufferCount = max(Int(asbd.mChannelsPerFrame), 1)
+        let audioBufferListSize = MemoryLayout<AudioBufferList>.size +
+            max(bufferCount - 1, 0) * MemoryLayout<AudioBuffer>.stride
+
+        let audioBufferListStorage = UnsafeMutableRawPointer.allocate(
+            byteCount: audioBufferListSize,
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { audioBufferListStorage.deallocate() }
+
+        let audioBufferListPointer = audioBufferListStorage.bindMemory(to: AudioBufferList.self, capacity: 1)
+        var blockBuffer: CMBlockBuffer?
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: nil,
+            bufferListOut: audioBufferListPointer,
+            bufferListSize: audioBufferListSize,
+            blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &blockBuffer
+        )
+
+        guard status == noErr else {
+            return nil
+        }
+
         let formatFlags = asbd.mFormatFlags
         let isFloat = (formatFlags & kAudioFormatFlagIsFloat) != 0
 
         if isFloat && asbd.mBitsPerChannel == 32 {
-            let sampleCount = length / MemoryLayout<Float>.size
-            guard sampleCount > 0 else { return nil }
-            let samples = dataPointer.withMemoryRebound(to: Float.self, capacity: sampleCount) { pointer in
-                Array(UnsafeBufferPointer(start: pointer, count: sampleCount))
-            }
-            return rmsLevel(samples)
+            return rmsLevel(
+                from: UnsafeMutableAudioBufferListPointer(audioBufferListPointer),
+                sampleType: Float.self
+            ) { Double($0) }
         }
 
         if asbd.mBitsPerChannel == 16 {
-            let sampleCount = length / MemoryLayout<Int16>.size
-            guard sampleCount > 0 else { return nil }
-            let samples = dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
-                Array(UnsafeBufferPointer(start: pointer, count: sampleCount))
-            }
-            return rmsLevel(samples.map { Double($0) / Double(Int16.max) })
+            return rmsLevel(
+                from: UnsafeMutableAudioBufferListPointer(audioBufferListPointer),
+                sampleType: Int16.self
+            ) { Double($0) / Double(Int16.max) }
         }
 
         return nil
+    }
+
+    private func rmsLevel<Sample>(
+        from audioBuffers: UnsafeMutableAudioBufferListPointer,
+        sampleType: Sample.Type,
+        transform: (Sample) -> Double
+    ) -> Double? {
+        var totalSquare = 0.0
+        var totalSamples = 0
+
+        for audioBuffer in audioBuffers {
+            guard let data = audioBuffer.mData else { continue }
+
+            let sampleCount = Int(audioBuffer.mDataByteSize) / MemoryLayout<Sample>.stride
+            guard sampleCount > 0 else { continue }
+
+            let pointer = data.bindMemory(to: Sample.self, capacity: sampleCount)
+            let samples = UnsafeBufferPointer(start: pointer, count: sampleCount)
+
+            for sample in samples {
+                let value = transform(sample)
+                totalSquare += value * value
+            }
+            totalSamples += sampleCount
+        }
+
+        guard totalSamples > 0 else { return nil }
+        return sqrt(totalSquare / Double(totalSamples))
     }
 
     private func rmsLevel(_ samples: [Float]) -> Double {
