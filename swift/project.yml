@@ -1,28 +1,60 @@
 name: LoomClone
+
 options:
-  deploymentTarget:
-    macOS: "14.0"
-  bundleIdPrefix: com.germanescobar
-  xcodeVersion: "16.0"
-settings:
-  SWIFT_VERSION: "5.9"
-  MACOSX_DEPLOYMENT_TARGET: "14.0"
+  createIntermediateGroups: true
+
 packages:
   aws-sdk-swift:
     url: https://github.com/awslabs/aws-sdk-swift.git
-    from: "1.0.0"
+    from: 1.0.0
+
+settings:
+  base:
+    CODE_SIGN_IDENTITY: "-"
+    MACOSX_DEPLOYMENT_TARGET: 14.0
+    SDKROOT: macosx
+    SWIFT_VERSION: 5.9
+  configs:
+    Debug:
+      COPY_PHASE_STRIP: NO
+      DEBUG_INFORMATION_FORMAT: dwarf
+      ENABLE_TESTABILITY: YES
+      GCC_OPTIMIZATION_LEVEL: 0
+      GCC_PREPROCESSOR_DEFINITIONS:
+        - "$(inherited)"
+        - DEBUG=1
+      MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+      ONLY_ACTIVE_ARCH: YES
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    Release:
+      COPY_PHASE_STRIP: NO
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      ENABLE_NS_ASSERTIONS: NO
+      MTL_ENABLE_DEBUG_INFO: NO
+      SWIFT_COMPILATION_MODE: wholemodule
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+
 targets:
   LoomClone:
     type: application
     platform: macOS
-    sources: [LoomClone]
-    settings:
-      base:
-        INFOPLIST_FILE: LoomClone/Info.plist
-        CODE_SIGN_ENTITLEMENTS: LoomClone/LoomClone.entitlements
-        PRODUCT_BUNDLE_IDENTIFIER: com.germanescobar.Reclip
-        CODE_SIGN_IDENTITY: "-"
-        PRODUCT_NAME: Reclip
+    deploymentTarget: "14.0"
+    sources:
+      - path: LoomClone
+        excludes:
+          - Info.plist
+          - LoomClone.entitlements
     dependencies:
       - package: aws-sdk-swift
         product: AWSS3
+    settings:
+      base:
+        CODE_SIGN_ENTITLEMENTS: LoomClone/LoomClone.entitlements
+        COMBINE_HIDPI_IMAGES: YES
+        INFOPLIST_FILE: LoomClone/Info.plist
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+        PRODUCT_BUNDLE_IDENTIFIER: com.germanescobar.Reclip
+        PRODUCT_NAME: Reclip

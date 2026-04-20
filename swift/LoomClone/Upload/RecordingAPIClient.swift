@@ -33,7 +33,7 @@ enum RecordingAPIError: LocalizedError {
 }
 
 class RecordingAPIClient {
-    func createRecording(title: String, s3URL: String, description: String? = nil) async throws -> String {
+    func createRecording(title: String, s3URL: String, description: String? = nil, transcript: RecordingTranscript? = nil) async throws -> String {
         let settings = AWSSettingsStorage.load()
 
         guard !settings.apiBaseURL.isEmpty, !settings.apiKey.isEmpty else {
@@ -56,6 +56,17 @@ class RecordingAPIClient {
         ]
         if let description, !description.isEmpty {
             body["description"] = description
+        }
+        if let transcript {
+            body["transcript_text"] = transcript.text
+            body["transcript_segments"] = transcript.segments.map { segment in
+                [
+                    "id": segment.id,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text
+                ]
+            }
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

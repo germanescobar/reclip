@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback } from "react"
 import Link from "next/link"
-import type { Recording } from "@/lib/types"
+import type { Recording, TranscriptSegment } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -49,6 +49,11 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
   const [isBuffering, setIsBuffering] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const transcriptSegments = [...(recording.transcript_segments ?? [])].sort((a, b) => a.start - b.start)
+  const activeSegment =
+    transcriptSegments.find(
+      (segment) => currentTime >= segment.start && currentTime < segment.end
+    ) ?? null
 
   const ownerDisplayName = ownerName ?? "Unknown"
   const ownerInitial = (ownerDisplayName[0] ?? "?").toUpperCase()
@@ -80,6 +85,14 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
     if (videoRef.current) {
       videoRef.current.currentTime = value[0]
       setCurrentTime(value[0])
+    }
+  }
+
+  const handleSegmentClick = (segment: TranscriptSegment) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = segment.start
+      setCurrentTime(segment.start)
+      void videoRef.current.play()
     }
   }
 
@@ -255,7 +268,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col lg:flex-row">
+      <div className="flex-1 flex flex-col xl:flex-row">
         {/* Video Area */}
         <div className="flex-1 p-4 lg:p-6">
           <div
@@ -409,31 +422,79 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
         </div>
 
         {/* Sidebar */}
-        <div className="lg:w-80 xl:w-96 border-t lg:border-t-0 lg:border-l border-border bg-card p-5">
-          <div className="flex items-center gap-3 mb-4">
-            <Avatar className="size-10">
-              <AvatarFallback className="bg-primary text-primary-foreground font-medium">
-                {ownerInitial}
-              </AvatarFallback>
-            </Avatar>
-            <div>
-              <div className="text-sm font-medium">{ownerDisplayName}</div>
-              <div className="text-xs text-muted-foreground">Shared {sharedTimeAgo}</div>
+        <div className="xl:w-[28rem] border-t xl:border-t-0 xl:border-l border-border bg-card">
+          <div className="border-b border-border p-5">
+            <div className="flex items-center gap-3">
+              <Avatar className="size-10">
+                <AvatarFallback className="bg-primary text-primary-foreground font-medium">
+                  {ownerInitial}
+                </AvatarFallback>
+              </Avatar>
+              <div>
+                <div className="text-sm font-medium">{ownerDisplayName}</div>
+                <div className="text-xs text-muted-foreground">Shared {sharedTimeAgo}</div>
+              </div>
+            </div>
+            <div className="mt-4 border-t border-border pt-4">
+              <h2 className="text-sm font-medium text-muted-foreground mb-2">About this recording</h2>
+              <p className="text-sm">
+                {recording.description || "No description provided."}
+              </p>
+              <div className="mt-4 text-xs text-muted-foreground">
+                {new Date(recording.created_at).toLocaleDateString("en-US", {
+                  weekday: "long",
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                })}
+              </div>
             </div>
           </div>
-          <div className="border-t border-border pt-4">
-            <h2 className="text-sm font-medium text-muted-foreground mb-2">About this recording</h2>
-            <p className="text-sm">
-              {recording.description || "No description provided."}
-            </p>
-            <div className="mt-4 text-xs text-muted-foreground">
-              {new Date(recording.created_at).toLocaleDateString("en-US", {
-                weekday: "long",
-                year: "numeric",
-                month: "long",
-                day: "numeric",
-              })}
+
+          <div className="p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-medium text-muted-foreground">Transcript</h2>
+              {activeSegment && (
+                <span className="text-xs text-muted-foreground">
+                  {formatTime(activeSegment.start)}
+                </span>
+              )}
             </div>
+
+            {transcriptSegments.length > 0 ? (
+              <div className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
+                {transcriptSegments.map((segment) => {
+                  const isActive = activeSegment?.id === segment.id
+
+                  return (
+                    <button
+                      key={segment.id}
+                      type="button"
+                      onClick={() => handleSegmentClick(segment)}
+                      className={cn(
+                        "w-full rounded-lg border px-3 py-2 text-left transition-colors",
+                        isActive
+                          ? "border-primary bg-primary/10"
+                          : "border-border hover:bg-accent"
+                      )}
+                    >
+                      <div className="mb-1 text-xs font-medium text-muted-foreground">
+                        {formatTime(segment.start)}
+                      </div>
+                      <div className="text-sm leading-6">{segment.text}</div>
+                    </button>
+                  )
+                })}
+              </div>
+            ) : recording.transcript_text ? (
+              <div className="rounded-lg border border-border bg-background px-4 py-3 text-sm leading-6">
+                {recording.transcript_text}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border px-4 py-6 text-sm text-muted-foreground">
+                No transcript is available for this recording yet.
+              </div>
+            )}
           </div>
         </div>
       </div>
