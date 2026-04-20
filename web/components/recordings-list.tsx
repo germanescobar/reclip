@@ -154,10 +154,20 @@ export function RecordingsList({ recordings: initialRecordings }: RecordingsList
               </DropdownMenu>
             </CardHeader>
             <CardContent>
+              {recording.transcript_text && (
+                <p className="mb-3 line-clamp-2 text-sm text-muted-foreground">
+                  {recording.transcript_text}
+                </p>
+              )}
               <div className="flex items-center gap-4 text-sm text-muted-foreground">
                 <span>
                   Created {new Date(recording.created_at).toLocaleDateString()}
                 </span>
+                {recording.transcript_text && (
+                  <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium">
+                    Transcript
+                  </span>
+                )}
                 <span className="font-mono bg-secondary px-2 py-0.5 rounded text-xs">
                   /r/{recording.short_id}
                 </span>

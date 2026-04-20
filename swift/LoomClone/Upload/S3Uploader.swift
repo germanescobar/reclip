@@ -18,6 +18,7 @@ struct AWSSettingsFormData {
     var presignedURLExpiration: String = "3600"
     var apiBaseURL: String = AWSSettingsFormData.defaultAPIBaseURL
     var apiKey: String = ""
+    var groqAPIKey: String = ""
 }
 
 enum AWSSettingsStorage {
@@ -31,6 +32,7 @@ enum AWSSettingsStorage {
     private static let presignedURLExpirationKey = "aws.presignedURLExpiration"
     private static let apiBaseURLKey = "api.baseURL"
     private static let apiKeyKey = "api.key"
+    private static let groqAPIKeyKey = "groq.apiKey"
 
     static func load() -> AWSSettingsFormData {
         let defaults = UserDefaults.standard
@@ -44,7 +46,8 @@ enum AWSSettingsStorage {
             publicBaseURL: defaults.string(forKey: publicBaseURLKey) ?? "",
             presignedURLExpiration: defaults.string(forKey: presignedURLExpirationKey) ?? "3600",
             apiBaseURL: defaults.string(forKey: apiBaseURLKey).flatMap { $0.isEmpty ? nil : $0 } ?? AWSSettingsFormData.defaultAPIBaseURL,
-            apiKey: defaults.string(forKey: apiKeyKey) ?? ""
+            apiKey: defaults.string(forKey: apiKeyKey) ?? "",
+            groqAPIKey: defaults.string(forKey: groqAPIKeyKey) ?? ""
         )
     }
 
@@ -60,6 +63,7 @@ enum AWSSettingsStorage {
         defaults.set(formData.presignedURLExpiration.trimmingCharacters(in: .whitespacesAndNewlines), forKey: presignedURLExpirationKey)
         defaults.set(formData.apiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: apiBaseURLKey)
         defaults.set(formData.apiKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: apiKeyKey)
+        defaults.set(formData.groqAPIKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: groqAPIKeyKey)
     }
 }
 
@@ -222,7 +226,7 @@ class S3Uploader: @unchecked Sendable {
     }
 }
 
-private func firstNonEmptyValue(_ candidates: String?...) -> String? {
+func firstNonEmptyValue(_ candidates: String?...) -> String? {
     for candidate in candidates {
         if let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
            !trimmed.isEmpty {

@@ -144,6 +144,7 @@ class RecordingManager: @unchecked Sendable {
     private let compositor = VideoCompositor()
     private let uploader = S3Uploader()
     private let apiClient = RecordingAPIClient()
+    private let transcriptionClient = GroqTranscriptionClient()
     @ObservationIgnored private let floatingCameraWindowController = FloatingCameraWindowController()
 
     private var assetWriter: AVAssetWriter?
@@ -558,6 +559,7 @@ class RecordingManager: @unchecked Sendable {
         uploadProgress = 0
 
         do {
+            async let transcriptTask = transcriptionClient.transcribeIfPossible(fileURL: fileURL)
             let s3URL = try await uploader.upload(fileURL: fileURL) { [weak self] progress in
                 DispatchQueue.main.async {
                     self?.uploadProgress = progress
@@ -572,7 +574,13 @@ class RecordingManager: @unchecked Sendable {
             print("[Upload] API Base URL: '\(settings.apiBaseURL)', API Key present: \(!settings.apiKey.isEmpty)")
 
             do {
-                let shareableURL = try await apiClient.createRecording(title: recordingTitle, s3URL: s3URL, description: description)
+                let transcript = await transcriptTask
+                let shareableURL = try await apiClient.createRecording(
+                    title: recordingTitle,
+                    s3URL: s3URL,
+                    description: description,
+                    transcript: transcript
+                )
                 print("[Upload] API success. Shareable URL: \(shareableURL)")
                 state = .uploaded(shareableURL)
             } catch {

@@ -15,10 +15,12 @@ A native macOS screen recording application that captures screen, system audio, 
 
 ```bash
 brew install xcodegen
-xcodegen generate
+./scripts/regenerate_xcodeproj.sh
 ```
 
-This creates `LoomClone.xcodeproj` from `project.yml`.
+This creates `LoomClone.xcodeproj` from [`project.yml`](/Users/germanescobar/Projects/incubating/recording/swift/project.yml).
+
+`project.yml` is the source of truth for the macOS Xcode project. When you add, remove, or move Swift files, regenerate the project instead of hand-editing `LoomClone.xcodeproj/project.pbxproj`.
 
 ### 2. Open in Xcode
 
@@ -49,6 +51,8 @@ Build in Xcode or via command line:
 ```bash
 xcodebuild -project LoomClone.xcodeproj -scheme LoomClone -configuration Debug build
 ```
+
+If you change the Swift file layout, run `./scripts/regenerate_xcodeproj.sh` before building in Xcode.
 
 ## Releases
 

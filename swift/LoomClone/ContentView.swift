@@ -520,6 +520,11 @@ private struct AWSSettingsView: View {
                             .textFieldStyle(.roundedBorder)
                     }
                 }
+
+                Section("Transcription") {
+                    SecureField("Groq API Key", text: $formData.groqAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
             .formStyle(.grouped)
 

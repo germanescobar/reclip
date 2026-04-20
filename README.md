@@ -23,6 +23,8 @@ A native macOS screen recording app built with Swift that captures screen, syste
 
 **Requirements:** macOS 14.0+ (Sonoma), Xcode 15+
 
+**Xcode workflow:** the committed Xcode project is generated from `swift/project.yml`. After adding or moving Swift files, run `./scripts/regenerate_xcodeproj.sh` from `swift/` instead of hand-editing `swift/LoomClone.xcodeproj/project.pbxproj`.
+
 See [`swift/README.md`](swift/README.md) for setup and usage instructions.
 
 ### Web App (`web/`)
