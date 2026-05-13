@@ -388,12 +388,14 @@ class RecordingManager: @unchecked Sendable {
                 return
             }
 
-            try restartCameraSession(
-                camera: selectedCamera,
-                microphone: selectedMicrophone,
-                includeCamera: true,
-                includeMicrophone: true
-            )
+            if !isCameraSessionReady(camera: selectedCamera, microphone: selectedMicrophone) {
+                try restartCameraSession(
+                    camera: selectedCamera,
+                    microphone: selectedMicrophone,
+                    includeCamera: true,
+                    includeMicrophone: true
+                )
+            }
 
             // Setup output file
             let outputURL = FileManager.default.temporaryDirectory
@@ -554,12 +556,11 @@ class RecordingManager: @unchecked Sendable {
         state = .recording
     }
 
-    func uploadRecording(fileURL: URL, title: String? = nil, description: String? = nil) async {
+    func uploadRecording(fileURL: URL, title: String? = nil, description: String? = nil, transcript: RecordingTranscript? = nil) async {
         state = .uploading
         uploadProgress = 0
 
         do {
-            async let transcriptTask = transcriptionClient.transcribeIfPossible(fileURL: fileURL)
             let s3URL = try await uploader.upload(fileURL: fileURL) { [weak self] progress in
                 DispatchQueue.main.async {
                     self?.uploadProgress = progress
@@ -568,13 +569,11 @@ class RecordingManager: @unchecked Sendable {
 
             print("[Upload] S3 upload complete. URL: \(s3URL)")
 
-            // Create recording via API to get a shareable URL
             let recordingTitle = title ?? fileURL.deletingPathExtension().lastPathComponent
             let settings = AWSSettingsStorage.load()
             print("[Upload] API Base URL: '\(settings.apiBaseURL)', API Key present: \(!settings.apiKey.isEmpty)")
 
             do {
-                let transcript = await transcriptTask
                 let shareableURL = try await apiClient.createRecording(
                     title: recordingTitle,
                     s3URL: s3URL,
@@ -585,7 +584,6 @@ class RecordingManager: @unchecked Sendable {
                 state = .uploaded(shareableURL)
             } catch {
                 print("[Upload] API call failed: \(error)")
-                // Fall back to S3 URL but show warning
                 state = .uploaded(s3URL)
             }
         } catch {
@@ -884,11 +882,15 @@ class RecordingManager: @unchecked Sendable {
         }
 
         do {
-            try restartCameraSession(
-                microphone: selectedMicrophone,
-                includeCamera: false,
-                includeMicrophone: true
-            )
+            let sessionAlreadyHasMic = isMicrophoneSessionReady(microphone: selectedMicrophone)
+
+            if !sessionAlreadyHasMic {
+                try restartCameraSession(
+                    microphone: selectedMicrophone,
+                    includeCamera: false,
+                    includeMicrophone: true
+                )
+            }
 
             let timeoutAt = Date().addingTimeInterval(3)
             var detected = false
@@ -903,7 +905,7 @@ class RecordingManager: @unchecked Sendable {
                 try? await Task.sleep(for: .milliseconds(100))
             }
 
-            if !keepSessionRunningOnSuccess && !isRecording {
+            if !keepSessionRunningOnSuccess && !isRecording && !sessionAlreadyHasMic {
                 cameraCapturer.stopCapture(waitUntilStopped: true)
             }
 
@@ -1162,6 +1164,29 @@ class RecordingManager: @unchecked Sendable {
         let release: Double = 0.18
         let factor = incoming > current ? attack : release
         return (current * (1 - factor)) + (incoming * factor)
+    }
+
+    private func isMicrophoneSessionReady(microphone: AVCaptureDevice?) -> Bool {
+        guard cameraCapturer.session.isRunning else { return false }
+        let inputs = cameraCapturer.session.inputs.compactMap { $0 as? AVCaptureDeviceInput }
+        guard let audioInput = inputs.first(where: { $0.device.hasMediaType(.audio) }) else { return false }
+        if let microphone, audioInput.device.uniqueID != microphone.uniqueID { return false }
+        return true
+    }
+
+    private func isCameraSessionReady(camera: AVCaptureDevice?, microphone: AVCaptureDevice?) -> Bool {
+        guard cameraCapturer.session.isRunning else { return false }
+
+        let inputs = cameraCapturer.session.inputs.compactMap { $0 as? AVCaptureDeviceInput }
+        guard
+            let videoInput = inputs.first(where: { $0.device.hasMediaType(.video) }),
+            let audioInput = inputs.first(where: { $0.device.hasMediaType(.audio) })
+        else { return false }
+
+        if let camera, videoInput.device.uniqueID != camera.uniqueID { return false }
+        if let microphone, audioInput.device.uniqueID != microphone.uniqueID { return false }
+
+        return true
     }
 
     private func restartCameraSession(

@@ -50,6 +50,7 @@ targets:
         product: AWSS3
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_ENTITLEMENTS: LoomClone/LoomClone.entitlements
         COMBINE_HIDPI_IMAGES: YES
         INFOPLIST_FILE: LoomClone/Info.plist

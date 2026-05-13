@@ -61,7 +61,7 @@ final class GroqTranscriptionClient {
 
     private let transcriptionURL = URL(string: "https://api.groq.com/openai/v1/audio/transcriptions")!
     private let model = "whisper-large-v3-turbo"
-    private let maxDirectFileSizeBytes = 80 * 1024 * 1024
+    private let maxDirectFileSizeBytes = 25 * 1024 * 1024
     private let chunkDuration: Double = 30
     private let overlapDuration: Double = 2
 
@@ -80,15 +80,16 @@ final class GroqTranscriptionClient {
 
     private func transcribe(fileURL: URL) async throws -> RecordingTranscript {
         let apiKey = try loadAPIKey()
-        let fileSize = try fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-
-        if fileSize < maxDirectFileSizeBytes {
-            let response = try await transcribeFile(fileURL: fileURL, apiKey: apiKey)
-            return normalizeTranscript(from: response)
-        }
 
         let preparedAudioURL = try await exportAudioForTranscription(from: fileURL)
         defer { try? FileManager.default.removeItem(at: preparedAudioURL) }
+
+        let audioSize = try preparedAudioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+
+        if audioSize < maxDirectFileSizeBytes {
+            let response = try await transcribeFile(fileURL: preparedAudioURL, apiKey: apiKey)
+            return normalizeTranscript(from: response)
+        }
 
         let chunks = try await createChunks(from: preparedAudioURL)
         defer {
@@ -284,81 +285,25 @@ final class GroqTranscriptionClient {
         let asset = AVURLAsset(url: videoURL)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
 
-        guard let audioTrack = audioTracks.first else {
+        guard !audioTracks.isEmpty else {
             throw GroqTranscriptionError.missingAudioTrack
+        }
+
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            throw GroqTranscriptionError.exportFailed("Could not create audio export session.")
         }
 
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("reclip-transcript-audio-\(UUID().uuidString)")
             .appendingPathExtension("m4a")
-        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
-        let reader = try AVAssetReader(asset: asset)
 
-        let readerOutput = AVAssetReaderTrackOutput(
-            track: audioTrack,
-            outputSettings: [
-                AVFormatIDKey: kAudioFormatLinearPCM,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsBigEndianKey: false,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsNonInterleaved: false
-            ]
-        )
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
 
-        let writerInput = AVAssetWriterInput(
-            mediaType: .audio,
-            outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 16_000,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 64_000
-            ]
-        )
+        await exportSession.export()
 
-        writerInput.expectsMediaDataInRealTime = false
-
-        guard reader.canAdd(readerOutput), writer.canAdd(writerInput) else {
-            throw GroqTranscriptionError.unsupportedFile
-        }
-
-        reader.add(readerOutput)
-        writer.add(writerInput)
-
-        guard reader.startReading() else {
-            throw GroqTranscriptionError.exportFailed(reader.error?.localizedDescription ?? "Reader failed to start.")
-        }
-
-        guard writer.startWriting() else {
-            throw GroqTranscriptionError.exportFailed(writer.error?.localizedDescription ?? "Writer failed to start.")
-        }
-
-        writer.startSession(atSourceTime: .zero)
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let queue = DispatchQueue(label: "com.reclip.groq-transcription.export")
-            writerInput.requestMediaDataWhenReady(on: queue) {
-                while writerInput.isReadyForMoreMediaData {
-                    if let sampleBuffer = readerOutput.copyNextSampleBuffer() {
-                        if !writerInput.append(sampleBuffer) {
-                            reader.cancelReading()
-                            writerInput.markAsFinished()
-                            writer.cancelWriting()
-                            continuation.resume(throwing: GroqTranscriptionError.exportFailed(writer.error?.localizedDescription ?? "Failed to append audio sample."))
-                            return
-                        }
-                    } else {
-                        writerInput.markAsFinished()
-                        writer.finishWriting {
-                            if let error = writer.error {
-                                continuation.resume(throwing: GroqTranscriptionError.exportFailed(error.localizedDescription))
-                            } else {
-                                continuation.resume()
-                            }
-                        }
-                        return
-                    }
-                }
-            }
+        guard exportSession.status == .completed else {
+            throw GroqTranscriptionError.exportFailed(exportSession.error?.localizedDescription ?? "Audio export failed.")
         }
 
         return outputURL

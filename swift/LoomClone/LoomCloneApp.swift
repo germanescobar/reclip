@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let recordingHUDWindowController = RecordingHUDWindowController()
+    private let postRecordingWindowController = PostRecordingWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -20,8 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         manager.onStateChanged = { [weak self] state in
             DispatchQueue.main.async {
-                guard case .preparing = state else { return }
-                self?.closePopover()
+                guard let self else { return }
+                switch state {
+                case .preparing:
+                    self.closePopover()
+                case .saved(let url):
+                    self.postRecordingWindowController.show(fileURL: url, manager: self.manager)
+                default:
+                    break
+                }
             }
         }
         manager.onRecordingMetricsChanged = { [weak self] in
@@ -123,7 +131,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard manager.isRecording || manager.isPaused else {
             if recordingHUDWindowController.isVisible {
                 recordingHUDWindowController.hide()
-                showPopover(nil)
             }
             return
         }
