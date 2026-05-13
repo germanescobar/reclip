@@ -3,8 +3,33 @@ import { NextResponse } from "next/server"
 import crypto from "crypto"
 import { generateShortId } from "@/lib/utils/short-id"
 
+interface TranscriptSegmentPayload {
+  id: number
+  start: number
+  end: number
+  text: string
+}
+
 function hashApiKey(key: string): string {
   return crypto.createHash("sha256").update(key).digest("hex")
+}
+
+function isTranscriptSegment(value: unknown): value is TranscriptSegmentPayload {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+
+  const segment = value as Record<string, unknown>
+  return (
+    typeof segment.id === "number" &&
+    Number.isFinite(segment.id) &&
+    typeof segment.start === "number" &&
+    Number.isFinite(segment.start) &&
+    typeof segment.end === "number" &&
+    Number.isFinite(segment.end) &&
+    segment.end >= segment.start &&
+    typeof segment.text === "string"
+  )
 }
 
 export async function POST(request: Request) {
@@ -45,7 +70,7 @@ export async function POST(request: Request) {
 
     // Parse the request body
     const body = await request.json()
-    const { title, description, s3_url } = body
+    const { title, description, s3_url, transcript_text, transcript_segments } = body
 
     if (!title || typeof title !== "string") {
       return NextResponse.json(
@@ -69,6 +94,22 @@ export async function POST(request: Request) {
         { error: "Invalid s3_url format" },
         { status: 400 }
       )
+    }
+
+    if (transcript_text !== undefined && typeof transcript_text !== "string") {
+      return NextResponse.json(
+        { error: "transcript_text must be a string" },
+        { status: 400 }
+      )
+    }
+
+    if (transcript_segments !== undefined) {
+      if (!Array.isArray(transcript_segments) || !transcript_segments.every(isTranscriptSegment)) {
+        return NextResponse.json(
+          { error: "transcript_segments must be an array of valid transcript segments" },
+          { status: 400 }
+        )
+      }
     }
 
     // Generate a unique short ID
@@ -106,6 +147,10 @@ export async function POST(request: Request) {
         title: title.trim(),
         description: description?.trim() || null,
         s3_url,
+        transcript_text: typeof transcript_text === "string" && transcript_text.trim() ? transcript_text.trim() : null,
+        transcript_segments: Array.isArray(transcript_segments) && transcript_segments.length > 0
+          ? transcript_segments
+          : null,
       })
       .select()
       .single()

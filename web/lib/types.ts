@@ -1,3 +1,10 @@
+export interface TranscriptSegment {
+  id: number
+  start: number
+  end: number
+  text: string
+}
+
 export interface Recording {
   id: string
   user_id: string
@@ -5,6 +12,8 @@ export interface Recording {
   title: string
   description: string | null
   s3_url: string
+  transcript_text: string | null
+  transcript_segments: TranscriptSegment[] | null
   created_at: string
   updated_at: string
 }

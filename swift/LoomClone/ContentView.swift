@@ -1,7 +1,6 @@
 import SwiftUI
 import ScreenCaptureKit
 import AVFoundation
-import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Bindable var manager: RecordingManager
@@ -10,10 +9,6 @@ struct ContentView: View {
     @State private var selectedCameraID: String?
     @State private var selectedMicrophoneID: String?
     @State private var showingSettings = false
-    @State private var recordingTitle = ""
-    @State private var recordingDescription = ""
-    @State private var savedLocalURL: URL?
-    @FocusState private var isTitleFocused: Bool
 
     var body: some View {
         Group {
@@ -85,14 +80,6 @@ struct ContentView: View {
         .task {
             await manager.prepare()
             syncLocalSelections()
-        }
-        .onChange(of: manager.state) { _, newState in
-            if case .idle = newState {
-                savedLocalURL = nil
-            }
-            if case .saved = newState {
-                isTitleFocused = true
-            }
         }
         .onChange(of: selectedDisplay?.displayID) { _, _ in
             manager.selectedDisplayID = selectedDisplay?.displayID
@@ -298,67 +285,6 @@ struct ContentView: View {
                 }
             }
 
-            if case .saved(let url) = manager.state {
-                VStack(spacing: 8) {
-                    TextField("Title", text: $recordingTitle)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 250)
-                        .focused($isTitleFocused)
-
-                    TextField("Description (optional)", text: $recordingDescription)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 250)
-                }
-
-                HStack(spacing: 12) {
-                    Button("Upload") {
-                        let title = recordingTitle.isEmpty ? url.deletingPathExtension().lastPathComponent : recordingTitle
-                        Task { await manager.uploadRecording(fileURL: url, title: title, description: recordingDescription.isEmpty ? nil : recordingDescription) }
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Save Locally") {
-                        saveRecordingLocally(from: url)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button("Discard") {
-                        try? FileManager.default.removeItem(at: url)
-                        manager.reset()
-                    }
-                    .buttonStyle(.bordered)
-                    .foregroundStyle(.red)
-                }
-
-                if let savedLocalURL {
-                    Text("Saved to \(savedLocalURL.path)")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    Text(url.lastPathComponent)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if manager.state == .uploading {
-                ProgressView(value: manager.uploadProgress)
-                    .frame(width: 200)
-                Text("\(Int(manager.uploadProgress * 100))%")
-                    .font(.caption)
-            }
-
-            if case .uploaded(let url) = manager.state {
-                Link("Open in browser", destination: URL(string: url)!)
-                    .font(.caption)
-
-                Button("New Recording") {
-                    manager.reset()
-                }
-                .buttonStyle(.bordered)
-            }
-
-            // Error with retry
             if case .error = manager.state {
                 Button("Try Again") {
                     manager.reset()
@@ -417,28 +343,6 @@ struct ContentView: View {
             return .orange
         default:
             return .secondary
-        }
-    }
-
-    private func saveRecordingLocally(from fileURL: URL) {
-        let panel = NSSavePanel()
-        panel.title = "Save Recording"
-        panel.nameFieldStringValue = recordingTitle.isEmpty
-            ? "recording.mp4"
-            : "\(recordingTitle).mp4"
-        panel.allowedContentTypes = [.mpeg4Movie]
-        panel.canCreateDirectories = true
-
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-
-        do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.copyItem(at: fileURL, to: destination)
-            savedLocalURL = destination
-        } catch {
-            manager.state = .error("Failed to save: \(error.localizedDescription)")
         }
     }
 
@@ -519,6 +423,11 @@ private struct AWSSettingsView: View {
                         TextField("Presigned URL Expiration (seconds)", text: $formData.presignedURLExpiration)
                             .textFieldStyle(.roundedBorder)
                     }
+                }
+
+                Section("Transcription") {
+                    SecureField("Groq API Key", text: $formData.groqAPIKey)
+                        .textFieldStyle(.roundedBorder)
                 }
             }
             .formStyle(.grouped)
