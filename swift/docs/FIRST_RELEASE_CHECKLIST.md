@@ -1,28 +1,21 @@
-# First Desktop Release Checklist
+# Desktop Release Checklist
 
-This checklist prepares and ships the first public macOS release of Reclip.
+This checklist prepares and ships a public macOS release of Reclip.
+
+## Release Policy
+
+Reclip intentionally ships non-notarized macOS artifacts. The project does not use Apple's notarization service, does not require notary credentials, and does not maintain a notarized release path.
+
+Because releases are not notarized, macOS Gatekeeper may warn users when opening the app for the first time.
 
 ## 1) Prerequisites
 
-- Active Apple Developer Program membership (paid, not only Personal Team).
 - Xcode 16+ and command line tools installed.
 - `xcodegen` installed (`brew install xcodegen`).
 - Bundle ID set to `com.germanescobar.Reclip`.
-- Team selected locally in Xcode for your own Apple Developer account.
-- `project.yml` signing updated for distribution (not ad-hoc `"-"` identity).
+- `project.yml` may remain configured for ad-hoc signing.
 
-## 2) One-time Notary Credential Setup
-
-Run once on your machine:
-
-```bash
-xcrun notarytool store-credentials "AC_NOTARY" \
-  --apple-id "<your-apple-id>" \
-  --team-id "<your-team-id>" \
-  --password "<app-specific-password>"
-```
-
-## 3) Release Command
+## 2) Release Command
 
 From the Swift project root run the following:
 
@@ -30,13 +23,7 @@ From the Swift project root run the following:
 ./scripts/release.sh
 ```
 
-If you need to test archive/export without notarization:
-
-```bash
-SKIP_NOTARIZATION=1 ./scripts/release.sh
-```
-
-## 4) Create GitHub Release
+## 3) Create GitHub Release
 
 - Create and upload release assets:
 
@@ -53,17 +40,18 @@ This uploads:
 The latest stable download URL is:
 - `https://github.com/germanescobar/reclip/releases/latest/download/Reclip.dmg`
 
-## 5) Release Notes
+## 4) Release Notes
 
 - Add release notes with:
   - version
   - fixes/features
+  - non-notarized macOS build notice
   - known limitations
   - minimum macOS version (14.0+)
 
-## 6) Smoke Test (Before Publishing)
+## 5) Smoke Test (Before Publishing)
 
 - Download DMG on a clean macOS user account.
 - Mount DMG and open the app.
-- Confirm no unsigned/notarization warning appears.
+- Confirm the expected non-notarized app warning behavior.
 - Confirm recording start/stop and upload workflow.
