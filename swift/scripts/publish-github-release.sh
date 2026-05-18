@@ -46,8 +46,9 @@ if [[ ! -f "$NOTES_FILE" ]]; then
   cat > "$NOTES_FILE" <<EOF
 ## ${TAG}
 
-- First macOS desktop release artifact.
+- macOS desktop release artifact.
 - Download \`${APP_NAME}.dmg\` for installation.
+- This build is intentionally not notarized, so macOS may show a security warning on first launch.
 - Checksums are attached for verification.
 EOF
 fi

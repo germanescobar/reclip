@@ -56,7 +56,7 @@ If you change the Swift file layout, run `./scripts/regenerate_xcodeproj.sh` bef
 
 ## Releases
 
-For first-time release setup and notarization, see `docs/FIRST_RELEASE_CHECKLIST.md`.
+For release setup and the project's non-notarized distribution policy, see `docs/FIRST_RELEASE_CHECKLIST.md`.
 
 Once prerequisites are complete, run:
 
