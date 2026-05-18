@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private let recordingHUDWindowController = RecordingHUDWindowController()
     private let postRecordingWindowController = PostRecordingWindowController()
+    private var onboardingWindowController: OnboardingWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -43,20 +44,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         configurePopover()
         updateStatusItemAppearance(isRecording: manager.isRecording)
         manager.onDisplaysLoaded = { [weak self] in
-            self?.refreshCameraPreview()
+            DispatchQueue.main.async {
+                self?.refreshCameraPreview()
+            }
+        }
+
+        authManager.onSignInChanged = { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.routeToInitialUI()
+            }
         }
 
         DispatchQueue.main.async { [weak self] in
-            self?.showPopover(nil)
+            self?.routeToInitialUI()
         }
+    }
+
+    private func routeToInitialUI() {
+        guard authManager.isSignedIn else {
+            showPopover(nil)
+            return
+        }
+
+        manager.refreshPermissionStatus()
+        if !OnboardingState.isCompleted || !manager.permissionsReady {
+            presentOnboarding()
+        } else {
+            showPopover(nil)
+        }
+    }
+
+    private func presentOnboarding() {
+        closePopover()
+
+        if onboardingWindowController == nil {
+            onboardingWindowController = OnboardingWindowController(manager: manager) { [weak self] in
+                self?.onboardingWindowController = nil
+                DispatchQueue.main.async {
+                    self?.showPopover(nil)
+                }
+            }
+        }
+        onboardingWindowController?.show()
     }
 
     @objc private func togglePopover(_ sender: AnyObject?) {
         if popover.isShown {
             popover.performClose(sender)
-        } else {
-            showPopover(sender)
+            return
         }
+
+        if onboardingWindowController?.isVisible == true {
+            onboardingWindowController?.show()
+            return
+        }
+
+        if authManager.isSignedIn {
+            manager.refreshPermissionStatus()
+            if !OnboardingState.isCompleted || !manager.permissionsReady {
+                presentOnboarding()
+                return
+            }
+        }
+
+        showPopover(sender)
     }
 
     private func configureStatusItem() {
