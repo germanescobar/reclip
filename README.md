@@ -8,6 +8,18 @@ A Loom-like screen recording application with a native macOS client and a Next.j
 2. Download the [latest release](https://github.com/germanescobar/reclip/releases/latest)
 3. Open the app and sign in with your account
 
+## Updating Reclip
+
+For now, Reclip updates are installed manually:
+
+1. Download the latest `Reclip.dmg` from the [latest release](https://github.com/germanescobar/reclip/releases/latest).
+2. Quit Reclip if it is running.
+3. Open the downloaded DMG.
+4. Replace the existing Reclip app in `/Applications` with the new copy.
+5. Open Reclip again.
+
+Reclip currently ships non-notarized macOS builds, so macOS may show a security warning the first time you open a newly installed version.
+
 ## Project Structure
 
 ```
