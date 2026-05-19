@@ -57,11 +57,7 @@ struct ContentView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            if !manager.permissionsReady {
-                permissionsSetupView
-            } else {
-                recordingControlsView
-            }
+            recordingControlsView
 
             Divider()
                 .padding(.top, 4)
@@ -93,79 +89,6 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) {
             AWSSettingsView(authManager: authManager)
         }
-    }
-
-    private var permissionsSetupView: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Before the first recording, let’s enable permissions one step at a time.")
-                .font(.callout)
-
-            VStack(alignment: .leading, spacing: 8) {
-                permissionRow(
-                    title: "1. Camera and microphone",
-                    isComplete: manager.cameraPermissionGranted && manager.microphonePermissionGranted,
-                    description: "Enable camera and microphone access first so the preview bubble can work."
-                )
-
-                if !(manager.cameraPermissionGranted && manager.microphonePermissionGranted) {
-                    Button("Allow Camera and Microphone") {
-                        Task {
-                            await manager.requestCameraAndMicrophonePermissions()
-                            syncLocalSelections()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                permissionRow(
-                    title: "2. Screen recording",
-                    isComplete: manager.screenPermissionGranted && !manager.needsAppRestart,
-                    description: "Grant screen recording only after camera and microphone are ready."
-                )
-
-                if manager.canRequestScreenPermission && !manager.screenPermissionGranted {
-                    Button("Request Screen Recording Access") {
-                        Task {
-                            await manager.beginScreenRecordingPermissionFlow()
-                            syncLocalSelections()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-
-                if manager.canRequestScreenPermission && !manager.screenPermissionGranted {
-                    Button("Open Screen Recording Settings") {
-                        manager.openScreenRecordingSettings()
-                    }
-                    .buttonStyle(.bordered)
-                }
-
-                if manager.needsAppRestart {
-                    Text("macOS applies screen recording access after Reclip quits. Turn it on in System Settings, then reopen the app.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button("Quit and Reopen Reclip") {
-                        manager.quitApplication()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-
-            Button("Refresh Permission Status") {
-                Task {
-                    await manager.refreshPermissionStatusAsync()
-                    if manager.permissionsReady {
-                        await manager.loadDisplays()
-                    }
-                    syncLocalSelections()
-                }
-            }
-            .buttonStyle(.bordered)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var recordingControlsView: some View {
@@ -298,24 +221,6 @@ struct ContentView: View {
         let mins = Int(manager.recordingDuration) / 60
         let secs = Int(manager.recordingDuration) % 60
         return String(format: "%02d:%02d", mins, secs)
-    }
-
-    @ViewBuilder
-    private func permissionRow(title: String, isComplete: Bool, description: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title)
-                    .font(.headline)
-                Spacer()
-                Text(isComplete ? "Ready" : "Pending")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(isComplete ? .green : .secondary)
-            }
-
-            Text(description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
     }
 
     private func syncLocalSelections() {

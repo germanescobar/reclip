@@ -6,6 +6,8 @@ final class AuthManager {
     private(set) var pendingSessionToken: String?
     private(set) var isSignedIn: Bool
 
+    @ObservationIgnored var onSignInChanged: ((Bool) -> Void)?
+
     init() {
         let settings = AWSSettingsStorage.load()
         isSignedIn = !settings.apiKey.isEmpty
@@ -52,6 +54,7 @@ final class AuthManager {
 
         isSignedIn = true
         pendingSessionToken = nil
+        onSignInChanged?(true)
     }
 
     func signOut() {
@@ -60,5 +63,6 @@ final class AuthManager {
         AWSSettingsStorage.save(settings)
         isSignedIn = false
         pendingSessionToken = nil
+        onSignInChanged?(false)
     }
 }
