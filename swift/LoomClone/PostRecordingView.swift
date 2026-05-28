@@ -157,7 +157,7 @@ struct PostRecordingView: View {
                 Text(msg)
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
 
             if canAct {
@@ -166,7 +166,7 @@ struct PostRecordingView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Button("Upload") {
+                Button(uploadButtonTitle) {
                     upload()
                 }
                 .buttonStyle(.borderedProminent)
@@ -181,6 +181,14 @@ struct PostRecordingView: View {
         if case .uploaded = manager.state { return false }
         if case .uploading = manager.state { return false }
         return true
+    }
+
+    private var uploadButtonTitle: String {
+        if case .error = manager.state {
+            return "Try Again"
+        }
+
+        return "Upload"
     }
 
     private func generateTranscript() async {
