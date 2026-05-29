@@ -584,7 +584,7 @@ class RecordingManager: @unchecked Sendable {
                 state = .uploaded(shareableURL)
             } catch {
                 print("[Upload] API call failed: \(error)")
-                state = .uploaded(s3URL)
+                state = .error("Upload failed: \(error.localizedDescription)")
             }
         } catch {
             state = .error("Upload failed: \(error.localizedDescription)")
