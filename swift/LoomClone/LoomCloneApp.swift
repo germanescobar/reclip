@@ -8,7 +8,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private enum PopoverLayout {
         static let recorderSize = NSSize(width: 380, height: 680)
         static let signInSize = NSSize(width: 380, height: 460)
-        static let minimumSize = NSSize(width: 350, height: 360)
         static let screenMargin: CGFloat = 24
     }
 
@@ -156,8 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let availableWidth = visibleFrame.width - (PopoverLayout.screenMargin * 2)
         let availableHeight = visibleFrame.height - (PopoverLayout.screenMargin * 2)
         popover.contentSize = NSSize(
-            width: min(preferredSize.width, max(PopoverLayout.minimumSize.width, availableWidth)),
-            height: min(preferredSize.height, max(PopoverLayout.minimumSize.height, availableHeight))
+            width: max(1, min(preferredSize.width, availableWidth)),
+            height: max(1, min(preferredSize.height, availableHeight))
         )
     }
 
