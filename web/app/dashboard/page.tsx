@@ -1,8 +1,11 @@
 import { createClient } from "@/lib/supabase/server"
 import { RecordingsList } from "@/components/recordings-list"
 import { Button } from "@/components/ui/button"
-import { Download } from "lucide-react"
+import { Download, ExternalLink } from "lucide-react"
+import Link from "next/link"
 import type { Recording } from "@/lib/types"
+
+const desktopDownloadUrl = "https://github.com/germanescobar/reclip/releases/latest"
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -25,9 +28,12 @@ export default async function DashboardPage() {
             Record your screen with camera overlay directly from your Mac.
           </p>
         </div>
-        <Button disabled>
-          <Download className="w-4 h-4" />
-          Download for macOS
+        <Button asChild>
+          <Link href={desktopDownloadUrl} target="_blank" rel="noopener noreferrer">
+            <Download className="w-4 h-4" />
+            Download for macOS
+            <ExternalLink className="w-4 h-4" />
+          </Link>
         </Button>
       </div>
       <div>
