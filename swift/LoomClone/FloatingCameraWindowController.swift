@@ -13,8 +13,8 @@ final class FloatingCameraWindowController: NSObject, NSWindowDelegate {
     private var panel: NSPanel?
     private var displayFrame: CGRect = .zero
 
-    func show(captureSession: AVCaptureSession, on screen: NSScreen, normalizedCenter initialCenter: CGPoint) {
-        displayFrame = screen.frame
+    func show(captureSession: AVCaptureSession, onDisplayFrame displayFrame: CGRect, normalizedCenter initialCenter: CGPoint) {
+        self.displayFrame = displayFrame
 
         let panel = makePanelIfNeeded(captureSession: captureSession)
         panel.contentView = NSHostingView(
