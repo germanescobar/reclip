@@ -2,6 +2,66 @@ import Foundation
 import ScreenCaptureKit
 import AVFoundation
 import CoreGraphics
+import AppKit
+
+enum RecordingCaptureTarget {
+    case display(SCDisplay)
+    case window(SCWindow)
+    case area(display: SCDisplay, rect: CGRect, scale: CGFloat)
+
+    var width: Int {
+        switch self {
+        case .display(let display):
+            return display.width
+        case .window(let window):
+            return Self.evenDimension(Int((window.frame.width * Self.scale(for: window)).rounded()))
+        case .area(_, let rect, let scale):
+            return Self.evenDimension(Int((rect.width * scale).rounded()))
+        }
+    }
+
+    var height: Int {
+        switch self {
+        case .display(let display):
+            return display.height
+        case .window(let window):
+            return Self.evenDimension(Int((window.frame.height * Self.scale(for: window)).rounded()))
+        case .area(_, let rect, let scale):
+            return Self.evenDimension(Int((rect.height * scale).rounded()))
+        }
+    }
+
+    var displayID: CGDirectDisplayID? {
+        switch self {
+        case .display(let display), .area(let display, _, _):
+            return display.displayID
+        case .window(let window):
+            return Self.screen(for: window)?.displayID
+        }
+    }
+
+    private static func evenDimension(_ value: Int) -> Int {
+        max(2, value - (value % 2))
+    }
+
+    private static func scale(for window: SCWindow) -> CGFloat {
+        screen(for: window)?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+    }
+
+    private static func screen(for window: SCWindow) -> NSScreen? {
+        let midpoint = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        return NSScreen.screens.first { $0.frame.contains(midpoint) }
+    }
+}
+
+private extension NSScreen {
+    var displayID: CGDirectDisplayID? {
+        guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return nil
+        }
+        return number.uint32Value
+    }
+}
 
 class ScreenCapturer: NSObject, @unchecked Sendable {
     private var stream: SCStream?
@@ -40,15 +100,47 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         return content.displays
     }
 
-    func startCapture(display: SCDisplay, captureSystemAudio: Bool = false) async throws {
-        width = display.width
-        height = display.height
+    func getAvailableWindows() async throws -> [SCWindow] {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        let currentBundleID = Bundle.main.bundleIdentifier
 
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        return content.windows
+            .filter { window in
+                window.isOnScreen &&
+                window.windowLayer == 0 &&
+                window.frame.width >= 80 &&
+                window.frame.height >= 80 &&
+                window.owningApplication?.bundleIdentifier != currentBundleID
+            }
+            .sorted { lhs, rhs in
+                windowDisplayName(lhs).localizedCaseInsensitiveCompare(windowDisplayName(rhs)) == .orderedAscending
+            }
+    }
+
+    func startCapture(target: RecordingCaptureTarget, captureSystemAudio: Bool = false) async throws {
+        width = target.width
+        height = target.height
+
+        let filter: SCContentFilter
+        let sourceRect: CGRect?
+        switch target {
+        case .display(let display):
+            filter = SCContentFilter(display: display, excludingWindows: [])
+            sourceRect = nil
+        case .window(let window):
+            filter = SCContentFilter(desktopIndependentWindow: window)
+            sourceRect = nil
+        case .area(let display, let rect, _):
+            filter = SCContentFilter(display: display, excludingWindows: [])
+            sourceRect = rect
+        }
 
         let config = SCStreamConfiguration()
         config.width = width
         config.height = height
+        if let sourceRect {
+            config.sourceRect = sourceRect
+        }
         config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.capturesAudio = captureSystemAudio
@@ -74,6 +166,15 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         try await stream.stopCapture()
         self.stream = nil
     }
+}
+
+func windowDisplayName(_ window: SCWindow) -> String {
+    let appName = window.owningApplication?.applicationName ?? "Unknown App"
+    let title = window.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if title.isEmpty {
+        return appName
+    }
+    return "\(appName) - \(title)"
 }
 
 extension ScreenCapturer: SCStreamOutput {

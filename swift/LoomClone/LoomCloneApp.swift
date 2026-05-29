@@ -238,6 +238,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+        routeToInitialUI()
+        return false
+    }
+
     func popoverDidClose(_ notification: Notification) {
         manager.hideCameraPreview()
     }
