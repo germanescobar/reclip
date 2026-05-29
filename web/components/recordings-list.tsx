@@ -97,7 +97,7 @@ export function RecordingsList({ recordings: initialRecordings }: RecordingsList
           <Empty
             icon={Video}
             title="No recordings yet"
-            description="Use the API to add your first recording. Check the API Keys section to get started."
+            description="Download the macOS app to create your first screen recording."
           />
         </CardContent>
       </Card>

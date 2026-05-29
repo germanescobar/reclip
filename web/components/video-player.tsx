@@ -71,7 +71,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
     return `${mins}:${secs.toString().padStart(2, "0")}`
   }
 
-  const handlePlayPause = () => {
+  const handlePlayPause = useCallback(() => {
     if (videoRef.current) {
       if (isPlaying) {
         videoRef.current.pause()
@@ -79,7 +79,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
         videoRef.current.play()
       }
     }
-  }
+  }, [isPlaying])
 
   const handleSeek = (value: number[]) => {
     if (videoRef.current) {
@@ -105,12 +105,12 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
     }
   }
 
-  const toggleMute = () => {
+  const toggleMute = useCallback(() => {
     if (videoRef.current) {
       videoRef.current.muted = !isMuted
       setIsMuted(!isMuted)
     }
-  }
+  }, [isMuted])
 
   const handleSpeedChange = (speed: number) => {
     setPlaybackSpeed(speed)
@@ -119,7 +119,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
     }
   }
 
-  const toggleFullscreen = async () => {
+  const toggleFullscreen = useCallback(async () => {
     if (!isFullscreen) {
       if (containerRef.current?.requestFullscreen) {
         await containerRef.current.requestFullscreen()
@@ -131,7 +131,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
         await document.exitFullscreen()
       }
     }
-  }
+  }, [isFullscreen])
 
   const handleMouseMove = useCallback(() => {
     setShowControls(true)
@@ -225,7 +225,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [duration])
+  }, [duration, handlePlayPause, toggleFullscreen, toggleMute])
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
