@@ -22,7 +22,7 @@ struct ContentView: View {
                 signedOutView
             }
         }
-        .frame(minWidth: 350, minHeight: 460)
+        .frame(minWidth: 350)
     }
 
     private var signedOutView: some View {
@@ -53,30 +53,33 @@ struct ContentView: View {
     }
 
     private var signedInView: some View {
-        VStack(spacing: 20) {
-            Text("Reclip")
-                .font(.title.bold())
+        ScrollView {
+            VStack(spacing: 20) {
+                Text("Reclip")
+                    .font(.title.bold())
 
-            Text(manager.state.displayText)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+                Text(manager.state.displayText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
 
-            recordingControlsView
+                recordingControlsView
 
-            Divider()
-                .padding(.top, 4)
+                Divider()
+                    .padding(.top, 4)
 
-            Button("Settings") {
-                showingSettings = true
+                Button("Settings") {
+                    showingSettings = true
+                }
+                .buttonStyle(.borderless)
+
+                Button("Quit Reclip") {
+                    manager.quitApplication()
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
-
-            Button("Quit Reclip") {
-                manager.quitApplication()
-            }
-            .buttonStyle(.borderless)
+            .frame(maxWidth: .infinity)
+            .padding(30)
         }
-        .padding(30)
         .task {
             await manager.prepare()
             syncLocalSelections()
