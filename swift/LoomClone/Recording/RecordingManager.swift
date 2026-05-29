@@ -109,6 +109,10 @@ class RecordingManager: @unchecked Sendable {
         case audio
     }
 
+    private struct SendableAssetWriter: @unchecked Sendable {
+        let writer: AVAssetWriter
+    }
+
     var state: RecordingState = .idle {
         didSet {
             onStateChanged?(state)
@@ -408,17 +412,20 @@ class RecordingManager: @unchecked Sendable {
                 includeMicrophone: true
             )
 
-            if let screen = Self.screen(for: display?.displayID) ?? Self.preferredScreen() {
-                await MainActor.run {
-                    floatingCameraWindowController.onNormalizedCenterChanged = { [weak self] normalizedCenter in
-                        self?.updateCameraOverlayPosition(normalizedCenter)
-                    }
-                    floatingCameraWindowController.show(
-                        captureSession: cameraCapturer.session,
-                        on: screen,
-                        normalizedCenter: cameraOverlayPosition
-                    )
+            let previewDisplayID = display?.displayID
+            await MainActor.run {
+                guard let displayFrame = (Self.screen(for: previewDisplayID) ?? Self.preferredScreen())?.frame else {
+                    return
                 }
+
+                floatingCameraWindowController.onNormalizedCenterChanged = { [weak self] normalizedCenter in
+                    self?.updateCameraOverlayPosition(normalizedCenter)
+                }
+                floatingCameraWindowController.show(
+                    captureSession: cameraCapturer.session,
+                    onDisplayFrame: displayFrame,
+                    normalizedCenter: cameraOverlayPosition
+                )
             }
         } catch {
             state = .error("Failed to show camera preview: \(error.localizedDescription)")
@@ -457,7 +464,12 @@ class RecordingManager: @unchecked Sendable {
                 return
             }
 
-            guard let screen = Self.screen(for: target.displayID) ?? Self.preferredScreen() else {
+            let targetDisplayID = target.displayID
+            let hasRecordingScreen = await MainActor.run {
+                (Self.screen(for: targetDisplayID) ?? Self.preferredScreen()) != nil
+            }
+
+            guard hasRecordingScreen else {
                 await MainActor.run {
                     floatingCameraWindowController.hide()
                 }
@@ -530,12 +542,18 @@ class RecordingManager: @unchecked Sendable {
             }
 
             await MainActor.run {
+                guard let displayFrame = (Self.screen(for: targetDisplayID) ?? Self.preferredScreen())?.frame else {
+                    floatingCameraWindowController.hide()
+                    state = .error("Could not find the selected recording screen")
+                    return
+                }
+
                 floatingCameraWindowController.onNormalizedCenterChanged = { [weak self] normalizedCenter in
                     self?.updateCameraOverlayPosition(normalizedCenter)
                 }
                 floatingCameraWindowController.show(
                     captureSession: cameraCapturer.session,
-                    on: screen,
+                    onDisplayFrame: displayFrame,
                     normalizedCenter: cameraOverlayPosition
                 )
             }
@@ -578,14 +596,17 @@ class RecordingManager: @unchecked Sendable {
             return
         }
 
+        let writerBox = SendableAssetWriter(writer: writer)
         let outputURL = writer.outputURL
 
         await withCheckedContinuation { continuation in
-            writerQueue.async {
+            writerQueue.async { [writerBox] in
+                let writer = writerBox.writer
                 self.videoInput?.markAsFinished()
                 self.audioInput?.markAsFinished()
 
-                writer.finishWriting {
+                writer.finishWriting { [writerBox] in
+                    let writer = writerBox.writer
                     if writer.status == .completed {
                         DispatchQueue.main.async {
                             self.state = .saved(outputURL)
