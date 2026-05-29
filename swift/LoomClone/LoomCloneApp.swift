@@ -5,6 +5,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     let manager = RecordingManager()
     let authManager = AuthManager()
 
+    private enum PopoverLayout {
+        static let recorderSize = NSSize(width: 380, height: 680)
+        static let signInSize = NSSize(width: 380, height: 460)
+        static let minimumSize = NSSize(width: 350, height: 360)
+        static let screenMargin: CGFloat = 24
+    }
+
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let recordingHUDWindowController = RecordingHUDWindowController()
@@ -123,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.delegate = self
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 380, height: 430)
+        popover.contentSize = PopoverLayout.signInSize
         popover.contentViewController = NSHostingController(
             rootView: ContentView(manager: manager, authManager: authManager)
         )
@@ -133,8 +140,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         guard let button = statusItem.button else { return }
 
         NSApp.activate(ignoringOtherApps: true)
+        updatePopoverSize(relativeTo: button)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         refreshCameraPreview()
+    }
+
+    private func updatePopoverSize(relativeTo button: NSStatusBarButton) {
+        let preferredSize = authManager.isSignedIn ? PopoverLayout.recorderSize : PopoverLayout.signInSize
+
+        guard let visibleFrame = button.window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+            popover.contentSize = preferredSize
+            return
+        }
+
+        let availableWidth = visibleFrame.width - (PopoverLayout.screenMargin * 2)
+        let availableHeight = visibleFrame.height - (PopoverLayout.screenMargin * 2)
+        popover.contentSize = NSSize(
+            width: min(preferredSize.width, max(PopoverLayout.minimumSize.width, availableWidth)),
+            height: min(preferredSize.height, max(PopoverLayout.minimumSize.height, availableHeight))
+        )
     }
 
     private func closePopover() {
