@@ -6,8 +6,12 @@ struct ContentView: View {
     @Bindable var manager: RecordingManager
     var authManager: AuthManager
     @State private var selectedDisplay: SCDisplay?
-    @State private var selectedCameraID: String?
-    @State private var selectedMicrophoneID: String?
+    @State private var captureMode: RecordingCaptureMode = .display
+    @State private var selectedWindowID: CGWindowID?
+    @State private var areaX: Double = 0
+    @State private var areaY: Double = 0
+    @State private var areaWidth: Double = 1280
+    @State private var areaHeight: Double = 720
     @State private var showingSettings = false
 
     var body: some View {
@@ -80,12 +84,16 @@ struct ContentView: View {
         .onChange(of: selectedDisplay?.displayID) { _, _ in
             manager.selectedDisplayID = selectedDisplay?.displayID
         }
-        .onChange(of: selectedCameraID) { _, newValue in
-            manager.selectedCameraID = newValue
+        .onChange(of: captureMode) { _, newValue in
+            manager.captureMode = newValue
         }
-        .onChange(of: selectedMicrophoneID) { _, newValue in
-            manager.selectedMicrophoneID = newValue
+        .onChange(of: selectedWindowID) { _, newValue in
+            manager.selectedWindowID = newValue
         }
+        .onChange(of: areaX) { _, _ in syncAreaSelection() }
+        .onChange(of: areaY) { _, _ in syncAreaSelection() }
+        .onChange(of: areaWidth) { _, _ in syncAreaSelection() }
+        .onChange(of: areaHeight) { _, _ in syncAreaSelection() }
         .sheet(isPresented: $showingSettings) {
             AWSSettingsView(authManager: authManager)
         }
@@ -104,6 +112,14 @@ struct ContentView: View {
             }
 
             if !manager.isRecording, case .idle = manager.state {
+                Picker("Capture", selection: $captureMode) {
+                    ForEach(RecordingCaptureMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 250)
+
                 if manager.availableDisplays.isEmpty {
                     Button("Load Displays") {
                         Task {
@@ -122,8 +138,61 @@ struct ContentView: View {
                     .frame(width: 250)
                 }
 
+                if captureMode == .window {
+                    if manager.availableWindows.isEmpty {
+                        Button("Load Windows") {
+                            Task {
+                                await manager.loadWindows()
+                                syncLocalSelections()
+                            }
+                        }
+                    } else {
+                        Picker("Window", selection: $selectedWindowID) {
+                            Text("Select window").tag(nil as CGWindowID?)
+                            ForEach(manager.availableWindows, id: \.windowID) { window in
+                                Text(windowDisplayName(window))
+                                    .tag(window.windowID as CGWindowID?)
+                            }
+                        }
+                        .frame(width: 250)
+
+                        Button("Refresh Windows") {
+                            Task {
+                                await manager.loadWindows()
+                                syncLocalSelections()
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                if captureMode == .area {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Area")
+                            .font(.headline)
+
+                        Grid(horizontalSpacing: 8, verticalSpacing: 8) {
+                            GridRow {
+                                areaField("X", value: $areaX)
+                                areaField("Y", value: $areaY)
+                            }
+                            GridRow {
+                                areaField("W", value: $areaWidth)
+                                areaField("H", value: $areaHeight)
+                            }
+                        }
+                    }
+                    .frame(width: 250, alignment: .leading)
+                }
+
+                Text("Target: \(manager.selectedTargetSummary)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(width: 250, alignment: .leading)
+
                 if !manager.availableCameras.isEmpty {
-                    Picker("Camera", selection: $selectedCameraID) {
+                    Picker("Camera", selection: $manager.selectedCameraID) {
                         ForEach(manager.availableCameras, id: \.uniqueID) { camera in
                             Text(camera.localizedName).tag(camera.uniqueID as String?)
                         }
@@ -132,7 +201,7 @@ struct ContentView: View {
                 }
 
                 if !manager.availableMicrophones.isEmpty {
-                    Picker("Microphone", selection: $selectedMicrophoneID) {
+                    Picker("Microphone", selection: $manager.selectedMicrophoneID) {
                         ForEach(manager.availableMicrophones, id: \.uniqueID) { mic in
                             Text(mic.localizedName).tag(mic.uniqueID as String?)
                         }
@@ -225,8 +294,33 @@ struct ContentView: View {
 
     private func syncLocalSelections() {
         selectedDisplay = manager.selectedDisplay
-        selectedCameraID = manager.selectedCameraID
-        selectedMicrophoneID = manager.selectedMicrophoneID
+        captureMode = manager.captureMode
+        selectedWindowID = manager.selectedWindowID
+        areaX = manager.selectedAreaRect.origin.x
+        areaY = manager.selectedAreaRect.origin.y
+        areaWidth = manager.selectedAreaRect.width
+        areaHeight = manager.selectedAreaRect.height
+    }
+
+    private func syncAreaSelection() {
+        manager.selectedAreaRect = CGRect(
+            x: areaX,
+            y: areaY,
+            width: max(areaWidth, 0),
+            height: max(areaHeight, 0)
+        )
+    }
+
+    private func areaField(_ label: String, value: Binding<Double>) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 14, alignment: .leading)
+            TextField(label, value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 92)
+        }
     }
 
     private var microphoneMeterColor: Color {
@@ -255,11 +349,8 @@ struct ContentView: View {
         if manager.isRecording || manager.isPaused {
             await manager.stopRecording()
         } else {
-            guard let display = selectedDisplay ?? manager.availableDisplays.first else {
-                manager.state = .error("No display available")
-                return
-            }
-            await manager.startRecording(display: display)
+            guard let target = manager.currentRecordingTarget() else { return }
+            await manager.startRecording(target: target)
         }
     }
 

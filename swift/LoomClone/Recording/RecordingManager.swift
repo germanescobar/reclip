@@ -86,6 +86,22 @@ enum RecordingAudioStatus: Equatable {
     }
 }
 
+enum RecordingCaptureMode: String, CaseIterable, Identifiable {
+    case display
+    case window
+    case area
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .display: return "Display"
+        case .window: return "Window"
+        case .area: return "Area"
+        }
+    }
+}
+
 @Observable
 class RecordingManager: @unchecked Sendable {
     private enum BufferedSampleKind {
@@ -107,6 +123,7 @@ class RecordingManager: @unchecked Sendable {
         }
     }
     var availableDisplays: [SCDisplay] = []
+    var availableWindows: [SCWindow] = []
     var availableCameras: [AVCaptureDevice] = []
     var availableMicrophones: [AVCaptureDevice] = []
     var cameraPermissionGranted = false
@@ -123,6 +140,9 @@ class RecordingManager: @unchecked Sendable {
     }
     var recordingAudioLevel: Double = 0
     var selectedDisplayID: CGDirectDisplayID?
+    var captureMode: RecordingCaptureMode = .display
+    var selectedWindowID: CGWindowID?
+    var selectedAreaRect = CGRect(x: 0, y: 0, width: 1280, height: 720)
     var selectedCameraID: String? {
         didSet {
             refreshPreviewCaptureDevicesIfNeeded()
@@ -166,11 +186,19 @@ class RecordingManager: @unchecked Sendable {
     private var pausedWallTime: TimeInterval = 0
     private var isRunningMicrophoneCheck = false
     @ObservationIgnored private var previewRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var deviceObserverTokens: [NSObjectProtocol] = []
 
     private let writerQueue = DispatchQueue(label: "com.loomclone.writer")
 
     init() {
         configureCaptureCallbacks()
+        observeCaptureDeviceChanges()
+    }
+
+    deinit {
+        for token in deviceObserverTokens {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     var isRecording: Bool {
@@ -194,6 +222,11 @@ class RecordingManager: @unchecked Sendable {
         return availableDisplays.first { $0.displayID == selectedDisplayID } ?? availableDisplays.first
     }
 
+    var selectedWindow: SCWindow? {
+        guard let selectedWindowID else { return nil }
+        return availableWindows.first { $0.windowID == selectedWindowID }
+    }
+
     var selectedCamera: AVCaptureDevice? {
         guard let selectedCameraID else { return availableCameras.first }
         return availableCameras.first { $0.uniqueID == selectedCameraID } ?? availableCameras.first
@@ -208,15 +241,59 @@ class RecordingManager: @unchecked Sendable {
         selectedMicrophone?.localizedName ?? "the selected microphone"
     }
 
+    var selectedTargetSummary: String {
+        switch captureMode {
+        case .display:
+            guard let display = selectedDisplay else { return "No display selected" }
+            return "Display \(display.displayID) (\(display.width)x\(display.height))"
+        case .window:
+            guard let window = selectedWindow else { return "No window selected" }
+            return windowDisplayName(window)
+        case .area:
+            return "\(Int(selectedAreaRect.width))x\(Int(selectedAreaRect.height)) area on \(selectedDisplay.map { "display \($0.displayID)" } ?? "the selected display")"
+        }
+    }
+
+    func currentRecordingTarget() -> RecordingCaptureTarget? {
+        switch captureMode {
+        case .display:
+            guard let display = selectedDisplay else {
+                state = .error("No display available")
+                return nil
+            }
+            return .display(display)
+        case .window:
+            guard let window = selectedWindow else {
+                state = .error("Select a window to record")
+                return nil
+            }
+            return .window(window)
+        case .area:
+            guard let display = selectedDisplay else {
+                state = .error("No display available for the selected area")
+                return nil
+            }
+            let scale = Self.screen(for: display.displayID)?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+            let normalizedRect = clampedAreaRect(selectedAreaRect.standardized, for: display, scale: scale)
+            guard normalizedRect.width >= 16, normalizedRect.height >= 16 else {
+                state = .error("Selected area must be at least 16x16")
+                return nil
+            }
+            return .area(display: display, rect: normalizedRect, scale: scale)
+        }
+    }
+
     func prepare() async {
         await refreshPermissionStatusAsync()
         loadDevices()
 
         if permissionsReady {
             await loadDisplays()
+            await loadWindows()
             syncSelections()
         } else {
             availableDisplays = []
+            availableWindows = []
         }
     }
 
@@ -293,15 +370,24 @@ class RecordingManager: @unchecked Sendable {
         }
     }
 
+    func loadWindows() async {
+        guard screenPermissionGranted else {
+            availableWindows = []
+            return
+        }
+
+        do {
+            availableWindows = try await screenCapturer.getAvailableWindows()
+            syncSelections()
+        } catch {
+            state = .error("Failed to load windows: \(error.localizedDescription)")
+        }
+    }
+
     func loadDevices() {
         availableCameras = CameraCapturer.availableCameras()
         availableMicrophones = CameraCapturer.availableMicrophones()
-        if selectedCameraID == nil {
-            selectedCameraID = availableCameras.first?.uniqueID
-        }
-        if selectedMicrophoneID == nil {
-            selectedMicrophoneID = availableMicrophones.first?.uniqueID
-        }
+        syncSelections()
     }
 
     func showCameraPreview(for display: SCDisplay? = nil) async {
@@ -349,7 +435,7 @@ class RecordingManager: @unchecked Sendable {
         }
     }
 
-    func startRecording(display: SCDisplay) async {
+    func startRecording(target: RecordingCaptureTarget) async {
         guard permissionsReady else {
             state = .error("Finish granting permissions before recording")
             return
@@ -371,11 +457,11 @@ class RecordingManager: @unchecked Sendable {
                 return
             }
 
-            guard let screen = Self.screen(for: display.displayID) else {
+            guard let screen = Self.screen(for: target.displayID) ?? Self.preferredScreen() else {
                 await MainActor.run {
                     floatingCameraWindowController.hide()
                 }
-                state = .error("Could not find the selected display")
+                state = .error("Could not find the selected recording screen")
                 return
             }
 
@@ -406,8 +492,8 @@ class RecordingManager: @unchecked Sendable {
 
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: display.width,
-                AVVideoHeightKey: display.height,
+                AVVideoWidthKey: target.width,
+                AVVideoHeightKey: target.height,
                 AVVideoCompressionPropertiesKey: [
                     AVVideoAverageBitRateKey: 6_000_000,
                     AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
@@ -433,7 +519,7 @@ class RecordingManager: @unchecked Sendable {
             self.audioInput = audioInput
 
             // Start screen capture
-            try await screenCapturer.startCapture(display: display, captureSystemAudio: false)
+            try await screenCapturer.startCapture(target: target, captureSystemAudio: false)
 
             // Start the camera session synchronously so startRunning()
             // completes before the preview layer connects to it.
@@ -1114,6 +1200,29 @@ class RecordingManager: @unchecked Sendable {
         }
     }
 
+    private func observeCaptureDeviceChanges() {
+        let notificationCenter = NotificationCenter.default
+        let notifications: [Notification.Name] = [
+            AVCaptureDevice.wasConnectedNotification,
+            AVCaptureDevice.wasDisconnectedNotification
+        ]
+
+        deviceObserverTokens = notifications.map { name in
+            notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.captureDevicesDidChange()
+            }
+        }
+    }
+
+    private func captureDevicesDidChange() {
+        loadDevices()
+        restorePreviewIfVisible()
+    }
+
     private func restorePreviewIfVisible() {
         guard permissionsReady, !isRecording, !isRunningMicrophoneCheck, floatingCameraWindowController.isVisible else {
             return
@@ -1130,6 +1239,9 @@ class RecordingManager: @unchecked Sendable {
         if selectedDisplayID == nil || !availableDisplays.contains(where: { $0.displayID == selectedDisplayID }) {
             selectedDisplayID = availableDisplays.first?.displayID
         }
+        if selectedWindowID == nil || !availableWindows.contains(where: { $0.windowID == selectedWindowID }) {
+            selectedWindowID = nil
+        }
         if selectedCameraID == nil || !availableCameras.contains(where: { $0.uniqueID == selectedCameraID }) {
             selectedCameraID = availableCameras.first?.uniqueID
         }
@@ -1142,6 +1254,20 @@ class RecordingManager: @unchecked Sendable {
         microphoneCheckState = .idle
         microphoneLevel = 0
         lastVerifiedMicrophoneSignalAt = nil
+    }
+
+    private func clampedAreaRect(_ rect: CGRect, for display: SCDisplay, scale: CGFloat) -> CGRect {
+        let displayBounds = CGRect(
+            x: 0,
+            y: 0,
+            width: CGFloat(display.width) / scale,
+            height: CGFloat(display.height) / scale
+        )
+
+        let clampedRect = rect.intersection(displayBounds)
+        guard !clampedRect.isNull else { return .zero }
+
+        return clampedRect.standardized
     }
 
     private func resetRecordingAudioFeedback() {
