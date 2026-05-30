@@ -141,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.activate(ignoringOtherApps: true)
         updatePopoverSize(relativeTo: button)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        manager.setCaptureSelectionVisible(true)
         refreshCameraPreview()
     }
 
@@ -268,7 +269,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        manager.setCaptureSelectionVisible(false)
         manager.hideCameraPreview()
+    }
+
+    func popoverShouldClose(_ popover: NSPopover) -> Bool {
+        !manager.isAreaSelectionActive
     }
 }
 
