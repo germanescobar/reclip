@@ -111,9 +111,9 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         case .display(let display):
             filter = SCContentFilter(display: display, excludingWindows: [])
             sourceRect = nil
-        case .area(let display, let rect, let scale):
+        case .area(let display, let rect, _):
             filter = SCContentFilter(display: display, excludingWindows: [])
-            sourceRect = rect.applying(CGAffineTransform(scaleX: scale, y: scale))
+            sourceRect = rect
         }
 
         let config = SCStreamConfiguration()
