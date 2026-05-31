@@ -8,10 +8,6 @@ struct ContentView: View {
     @State private var selectedDisplay: SCDisplay?
     @State private var captureMode: RecordingCaptureMode = .display
     @State private var selectedWindowID: CGWindowID?
-    @State private var areaX: Double = 0
-    @State private var areaY: Double = 0
-    @State private var areaWidth: Double = 1280
-    @State private var areaHeight: Double = 720
     @State private var showingSettings = false
 
     var body: some View {
@@ -93,10 +89,6 @@ struct ContentView: View {
         .onChange(of: selectedWindowID) { _, newValue in
             manager.selectedWindowID = newValue
         }
-        .onChange(of: areaX) { _, _ in syncAreaSelection() }
-        .onChange(of: areaY) { _, _ in syncAreaSelection() }
-        .onChange(of: areaWidth) { _, _ in syncAreaSelection() }
-        .onChange(of: areaHeight) { _, _ in syncAreaSelection() }
         .sheet(isPresented: $showingSettings) {
             AWSSettingsView(authManager: authManager)
         }
@@ -174,16 +166,14 @@ struct ContentView: View {
                         Text("Area")
                             .font(.headline)
 
-                        Grid(horizontalSpacing: 8, verticalSpacing: 8) {
-                            GridRow {
-                                areaField("X", value: $areaX)
-                                areaField("Y", value: $areaY)
-                            }
-                            GridRow {
-                                areaField("W", value: $areaWidth)
-                                areaField("H", value: $areaHeight)
-                            }
+                        Text(manager.selectedAreaSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button(manager.hasSelectedArea ? "Edit Area" : "Select Area") {
+                            manager.selectAreaVisually()
                         }
+                        .buttonStyle(.bordered)
                     }
                     .frame(width: 250, alignment: .leading)
                 }
@@ -299,31 +289,6 @@ struct ContentView: View {
         selectedDisplay = manager.selectedDisplay
         captureMode = manager.captureMode
         selectedWindowID = manager.selectedWindowID
-        areaX = manager.selectedAreaRect.origin.x
-        areaY = manager.selectedAreaRect.origin.y
-        areaWidth = manager.selectedAreaRect.width
-        areaHeight = manager.selectedAreaRect.height
-    }
-
-    private func syncAreaSelection() {
-        manager.selectedAreaRect = CGRect(
-            x: areaX,
-            y: areaY,
-            width: max(areaWidth, 0),
-            height: max(areaHeight, 0)
-        )
-    }
-
-    private func areaField(_ label: String, value: Binding<Double>) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 14, alignment: .leading)
-            TextField(label, value: value, format: .number)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 92)
-        }
     }
 
     private var microphoneMeterColor: Color {
@@ -352,6 +317,10 @@ struct ContentView: View {
         if manager.isRecording || manager.isPaused {
             await manager.stopRecording()
         } else {
+            if captureMode == .window {
+                await manager.loadWindows()
+                syncLocalSelections()
+            }
             guard let target = manager.currentRecordingTarget() else { return }
             await manager.startRecording(target: target)
         }

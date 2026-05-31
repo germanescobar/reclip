@@ -118,6 +118,7 @@ class RecordingManager: @unchecked Sendable {
             onStateChanged?(state)
             onRecordingChanged?(isRecording)
             onRecordingMetricsChanged?()
+            updateCaptureRegionOutline()
         }
     }
     var uploadProgress: Double = 0
@@ -143,10 +144,32 @@ class RecordingManager: @unchecked Sendable {
         }
     }
     var recordingAudioLevel: Double = 0
-    var selectedDisplayID: CGDirectDisplayID?
-    var captureMode: RecordingCaptureMode = .display
-    var selectedWindowID: CGWindowID?
-    var selectedAreaRect = CGRect(x: 0, y: 0, width: 1280, height: 720)
+    var selectedDisplayID: CGDirectDisplayID? {
+        didSet {
+            updateCaptureRegionOutline()
+        }
+    }
+    var captureMode: RecordingCaptureMode = .display {
+        didSet {
+            updateCaptureRegionOutline()
+        }
+    }
+    var selectedWindowID: CGWindowID? {
+        didSet {
+            updateCaptureRegionOutline()
+        }
+    }
+    var selectedAreaRect = CGRect(x: 0, y: 0, width: 1280, height: 720) {
+        didSet {
+            updateCaptureRegionOutline()
+        }
+    }
+    var isCaptureSelectionVisible = false {
+        didSet {
+            updateCaptureRegionOutline()
+        }
+    }
+    var isAreaSelectionActive = false
     var selectedCameraID: String? {
         didSet {
             refreshPreviewCaptureDevicesIfNeeded()
@@ -170,6 +193,8 @@ class RecordingManager: @unchecked Sendable {
     private let apiClient = RecordingAPIClient()
     private let transcriptionClient = GroqTranscriptionClient()
     @ObservationIgnored private let floatingCameraWindowController = FloatingCameraWindowController()
+    @ObservationIgnored private let captureRegionOutlineController = CaptureRegionOutlineController()
+    @ObservationIgnored private let areaSelectionWindowController = AreaSelectionWindowController()
 
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
@@ -254,8 +279,20 @@ class RecordingManager: @unchecked Sendable {
             guard let window = selectedWindow else { return "No window selected" }
             return windowDisplayName(window)
         case .area:
-            return "\(Int(selectedAreaRect.width))x\(Int(selectedAreaRect.height)) area on \(selectedDisplay.map { "display \($0.displayID)" } ?? "the selected display")"
+            return selectedAreaSummary
         }
+    }
+
+    var hasSelectedArea: Bool {
+        selectedAreaRect.width >= CaptureRegionGeometry.minimumSize &&
+        selectedAreaRect.height >= CaptureRegionGeometry.minimumSize
+    }
+
+    var selectedAreaSummary: String {
+        guard hasSelectedArea else {
+            return "No area selected"
+        }
+        return "\(Int(selectedAreaRect.width))x\(Int(selectedAreaRect.height)) area on \(selectedDisplay.map { "display \($0.displayID)" } ?? "the selected display")"
     }
 
     func currentRecordingTarget() -> RecordingCaptureTarget? {
@@ -271,13 +308,18 @@ class RecordingManager: @unchecked Sendable {
                 state = .error("Select a window to record")
                 return nil
             }
-            return .window(window)
+            guard let target = windowCaptureTarget(for: window) else {
+                state = .error("Could not resolve the selected window's screen area")
+                return nil
+            }
+            return target
         case .area:
             guard let display = selectedDisplay else {
                 state = .error("No display available for the selected area")
                 return nil
             }
-            let scale = Self.screen(for: display.displayID)?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
+            let screen = Self.screen(for: display.displayID)
+            let scale = captureScale(for: display, screen: screen)
             let normalizedRect = clampedAreaRect(selectedAreaRect.standardized, for: display, scale: scale)
             guard normalizedRect.width >= 16, normalizedRect.height >= 16 else {
                 state = .error("Selected area must be at least 16x16")
@@ -285,6 +327,43 @@ class RecordingManager: @unchecked Sendable {
             }
             return .area(display: display, rect: normalizedRect, scale: scale)
         }
+    }
+
+    func selectAreaVisually() {
+        guard let display = selectedDisplay else {
+            state = .error("No display available for area selection")
+            return
+        }
+
+        guard let screen = Self.screen(for: display.displayID) else {
+            state = .error("Could not find the selected display")
+            return
+        }
+
+        let scale = captureScale(for: display, screen: screen)
+        let normalizedRect = clampedAreaRect(selectedAreaRect.standardized, for: display, scale: scale)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isAreaSelectionActive = true
+            self.captureRegionOutlineController.hide()
+            self.areaSelectionWindowController.selectArea(
+                on: screen,
+                initialSourceRect: normalizedRect
+            ) { [weak self] selectedRect in
+                guard let self else { return }
+                self.isAreaSelectionActive = false
+                if let selectedRect {
+                    self.selectedAreaRect = self.clampedAreaRect(selectedRect.standardized, for: display, scale: scale)
+                } else {
+                    self.updateCaptureRegionOutline()
+                }
+            }
+        }
+    }
+
+    func setCaptureSelectionVisible(_ isVisible: Bool) {
+        isCaptureSelectionVisible = isVisible
     }
 
     func prepare() async {
@@ -529,6 +608,10 @@ class RecordingManager: @unchecked Sendable {
             self.assetWriter = writer
             self.videoInput = videoInput
             self.audioInput = audioInput
+
+            await MainActor.run {
+                captureRegionOutlineController.hide()
+            }
 
             // Start screen capture
             try await screenCapturer.startCapture(target: target, captureSystemAudio: false)
@@ -1275,6 +1358,131 @@ class RecordingManager: @unchecked Sendable {
         microphoneCheckState = .idle
         microphoneLevel = 0
         lastVerifiedMicrophoneSignalAt = nil
+    }
+
+    private func windowCaptureTarget(for window: SCWindow) -> RecordingCaptureTarget? {
+        let cgWindowBounds = currentWindowBounds(for: window.windowID)
+
+        guard let windowBounds = cgWindowBounds,
+              let screen = screen(containingTopLeftRect: windowBounds),
+              let displayID = CaptureRegionGeometry.displayID(for: screen),
+              let display = availableDisplays.first(where: { $0.displayID == displayID }) else {
+            return nil
+        }
+
+        let scale = captureScale(for: display, screen: screen)
+        let sourceRect = CaptureRegionGeometry.sourceRect(fromGlobalTopLeftRect: windowBounds, on: screen)
+        let normalizedRect = clampedAreaRect(sourceRect, for: display, scale: scale)
+
+        guard normalizedRect.width >= CaptureRegionGeometry.minimumSize,
+              normalizedRect.height >= CaptureRegionGeometry.minimumSize else {
+            return nil
+        }
+
+        return .area(display: display, rect: normalizedRect, scale: scale)
+    }
+
+    private func currentWindowBounds(for windowID: CGWindowID) -> CGRect? {
+        let options = CGWindowListOption(arrayLiteral: .optionIncludingWindow)
+        guard let windowInfo = CGWindowListCopyWindowInfo(options, windowID) as? [[String: Any]],
+              let info = windowInfo.first,
+              let boundsDictionary = info[kCGWindowBounds as String] as? [String: Any] else {
+            return nil
+        }
+
+        var bounds = CGRect.zero
+        guard CGRectMakeWithDictionaryRepresentation(boundsDictionary as CFDictionary, &bounds) else {
+            return nil
+        }
+
+        return bounds.standardized
+    }
+
+    private func updateCaptureRegionOutline() {
+        guard isCaptureSelectionVisible else {
+            Task { @MainActor [captureRegionOutlineController] in
+                captureRegionOutlineController.hide()
+            }
+            return
+        }
+
+        guard !isRecording, !isPaused else {
+            Task { @MainActor [captureRegionOutlineController] in
+                captureRegionOutlineController.hide()
+            }
+            return
+        }
+
+        let outline: (screen: NSScreen, rect: CGRect)?
+        switch captureMode {
+        case .display:
+            outline = nil
+        case .window:
+            if let window = selectedWindow,
+               let target = windowCaptureTarget(for: window),
+               case .area(let display, let rect, _) = target,
+               let screen = Self.screen(for: display.displayID) {
+                outline = (screen, rect)
+            } else {
+                outline = nil
+            }
+        case .area:
+            guard let display = selectedDisplay,
+                  let screen = Self.screen(for: display.displayID) else {
+                outline = nil
+                break
+            }
+
+            let scale = captureScale(for: display, screen: screen)
+            let rect = clampedAreaRect(selectedAreaRect.standardized, for: display, scale: scale)
+            outline = rect.width >= CaptureRegionGeometry.minimumSize && rect.height >= CaptureRegionGeometry.minimumSize
+                ? (screen, rect)
+                : nil
+        }
+
+        Task { @MainActor [captureRegionOutlineController] in
+            if let outline {
+                captureRegionOutlineController.show(sourceRect: outline.rect, on: outline.screen)
+            } else {
+                captureRegionOutlineController.hide()
+            }
+        }
+    }
+
+    private func screen(containingTopLeftRect rect: CGRect) -> NSScreen? {
+        let standardizedRect = rect.standardized
+        var bestScreen: NSScreen?
+        var bestArea: CGFloat = 0
+
+        for screen in NSScreen.screens {
+            let displayFrame = CaptureRegionGeometry.topLeftDisplayFrame(for: screen)
+            let intersection = displayFrame.intersection(standardizedRect)
+            guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else {
+                continue
+            }
+
+            let area = intersection.width * intersection.height
+            if area > bestArea {
+                bestScreen = screen
+                bestArea = area
+            }
+        }
+
+        return bestScreen
+    }
+
+    private func captureScale(for display: SCDisplay, screen: NSScreen?) -> CGFloat {
+        guard let screen, screen.frame.width > 0, screen.frame.height > 0 else {
+            return 1
+        }
+
+        let widthScale = CGFloat(display.width) / screen.frame.width
+        let heightScale = CGFloat(display.height) / screen.frame.height
+        let scale = min(widthScale, heightScale)
+        guard scale.isFinite, scale > 0 else {
+            return 1
+        }
+        return scale
     }
 
     private func clampedAreaRect(_ rect: CGRect, for display: SCDisplay, scale: CGFloat) -> CGRect {

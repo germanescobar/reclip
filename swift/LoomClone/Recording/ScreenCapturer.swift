@@ -6,15 +6,12 @@ import AppKit
 
 enum RecordingCaptureTarget {
     case display(SCDisplay)
-    case window(SCWindow)
     case area(display: SCDisplay, rect: CGRect, scale: CGFloat)
 
     var width: Int {
         switch self {
         case .display(let display):
             return display.width
-        case .window(let window):
-            return Self.evenDimension(Int((window.frame.width * Self.scale(for: window)).rounded()))
         case .area(_, let rect, let scale):
             return Self.evenDimension(Int((rect.width * scale).rounded()))
         }
@@ -24,8 +21,6 @@ enum RecordingCaptureTarget {
         switch self {
         case .display(let display):
             return display.height
-        case .window(let window):
-            return Self.evenDimension(Int((window.frame.height * Self.scale(for: window)).rounded()))
         case .area(_, let rect, let scale):
             return Self.evenDimension(Int((rect.height * scale).rounded()))
         }
@@ -35,22 +30,11 @@ enum RecordingCaptureTarget {
         switch self {
         case .display(let display), .area(let display, _, _):
             return display.displayID
-        case .window(let window):
-            return Self.screen(for: window)?.displayID
         }
     }
 
     private static func evenDimension(_ value: Int) -> Int {
         max(2, value - (value % 2))
-    }
-
-    private static func scale(for window: SCWindow) -> CGFloat {
-        screen(for: window)?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-    }
-
-    private static func screen(for window: SCWindow) -> NSScreen? {
-        let midpoint = CGPoint(x: window.frame.midX, y: window.frame.midY)
-        return NSScreen.screens.first { $0.frame.contains(midpoint) }
     }
 }
 
@@ -126,9 +110,6 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         switch target {
         case .display(let display):
             filter = SCContentFilter(display: display, excludingWindows: [])
-            sourceRect = nil
-        case .window(let window):
-            filter = SCContentFilter(desktopIndependentWindow: window)
             sourceRect = nil
         case .area(let display, let rect, _):
             filter = SCContentFilter(display: display, excludingWindows: [])
