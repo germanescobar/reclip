@@ -13,9 +13,7 @@ struct AWSSettingsFormData {
     var sessionToken: String = ""
     var region: String = "us-east-1"
     var bucket: String = ""
-    var usePublicURLs: Bool = false
     var publicBaseURL: String = ""
-    var presignedURLExpiration: String = "3600"
     var apiBaseURL: String = AWSSettingsFormData.defaultAPIBaseURL
     var apiKey: String = ""
     var groqAPIKey: String = ""
@@ -27,9 +25,7 @@ enum AWSSettingsStorage {
     private static let sessionTokenKey = "aws.sessionToken"
     private static let regionKey = "aws.region"
     private static let bucketKey = "aws.bucket"
-    private static let usePublicURLsKey = "aws.usePublicURLs"
     private static let publicBaseURLKey = "aws.publicBaseURL"
-    private static let presignedURLExpirationKey = "aws.presignedURLExpiration"
     private static let apiBaseURLKey = "api.baseURL"
     private static let apiKeyKey = "api.key"
     private static let groqAPIKeyKey = "groq.apiKey"
@@ -42,9 +38,7 @@ enum AWSSettingsStorage {
             sessionToken: defaults.string(forKey: sessionTokenKey) ?? "",
             region: defaults.string(forKey: regionKey) ?? "us-east-1",
             bucket: defaults.string(forKey: bucketKey) ?? "",
-            usePublicURLs: defaults.bool(forKey: usePublicURLsKey),
             publicBaseURL: defaults.string(forKey: publicBaseURLKey) ?? "",
-            presignedURLExpiration: defaults.string(forKey: presignedURLExpirationKey) ?? "3600",
             apiBaseURL: defaults.string(forKey: apiBaseURLKey).flatMap { $0.isEmpty ? nil : $0 } ?? AWSSettingsFormData.defaultAPIBaseURL,
             apiKey: defaults.string(forKey: apiKeyKey) ?? "",
             groqAPIKey: defaults.string(forKey: groqAPIKeyKey) ?? ""
@@ -58,9 +52,7 @@ enum AWSSettingsStorage {
         defaults.set(formData.sessionToken.trimmingCharacters(in: .whitespacesAndNewlines), forKey: sessionTokenKey)
         defaults.set(formData.region.trimmingCharacters(in: .whitespacesAndNewlines), forKey: regionKey)
         defaults.set(formData.bucket.trimmingCharacters(in: .whitespacesAndNewlines), forKey: bucketKey)
-        defaults.set(formData.usePublicURLs, forKey: usePublicURLsKey)
         defaults.set(formData.publicBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: publicBaseURLKey)
-        defaults.set(formData.presignedURLExpiration.trimmingCharacters(in: .whitespacesAndNewlines), forKey: presignedURLExpirationKey)
         defaults.set(formData.apiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines), forKey: apiBaseURLKey)
         defaults.set(formData.apiKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: apiKeyKey)
         defaults.set(formData.groqAPIKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: groqAPIKeyKey)
@@ -68,19 +60,15 @@ enum AWSSettingsStorage {
 }
 
 class S3Uploader: @unchecked Sendable {
-    enum DownloadURLMode {
-        case presigned
-        case publicURL(baseURL: String?)
-    }
-
     struct Config {
         let accessKeyId: String
         let secretAccessKey: String
         let sessionToken: String?
         let region: String
         let bucket: String
-        let downloadURLMode: DownloadURLMode
-        let presignedURLExpiration: TimeInterval
+        /// Optional base URL (e.g. a CloudFront domain) used to build public
+        /// object URLs. When empty, the raw S3 object URL is used.
+        let publicBaseURL: String?
 
         static func load() throws -> Config {
             let storedSettings = AWSSettingsStorage.load()
@@ -109,26 +97,10 @@ class S3Uploader: @unchecked Sendable {
                 throw S3Error.missingBucket
             }
 
-            let urlMode = firstNonEmptyValue(
-                storedSettings.usePublicURLs ? "public" : nil,
-                environment["S3_DOWNLOAD_URL_MODE"]?.lowercased()
+            let publicBaseURL = firstNonEmptyValue(
+                storedSettings.publicBaseURL,
+                environment["S3_PUBLIC_BASE_URL"]
             )
-            let downloadURLMode: DownloadURLMode
-            if urlMode == "public" {
-                downloadURLMode = .publicURL(
-                    baseURL: firstNonEmptyValue(
-                        storedSettings.publicBaseURL,
-                        environment["S3_PUBLIC_BASE_URL"]
-                    )
-                )
-            } else {
-                downloadURLMode = .presigned
-            }
-
-            let expiration = firstNonEmptyValue(
-                storedSettings.presignedURLExpiration,
-                environment["S3_PRESIGNED_URL_EXPIRATION"]
-            ).flatMap(TimeInterval.init) ?? 3600
 
             return Config(
                 accessKeyId: accessKey,
@@ -136,8 +108,7 @@ class S3Uploader: @unchecked Sendable {
                 sessionToken: sessionToken,
                 region: region,
                 bucket: bucket,
-                downloadURLMode: downloadURLMode,
-                presignedURLExpiration: expiration
+                publicBaseURL: publicBaseURL
             )
         }
     }
@@ -179,36 +150,18 @@ class S3Uploader: @unchecked Sendable {
 
         progressHandler(1.0)
 
-        do {
-            return try await makeDownloadURL(client: client, config: config, key: key)
-        } catch {
-            throw S3Error.serviceFailure(Self.describe(error: error))
-        }
+        return makeDownloadURL(config: config, key: key)
     }
 
-    private func makeDownloadURL(client: S3Client, config: Config, key: String) async throws -> String {
-        switch config.downloadURLMode {
-        case .presigned:
-            let request = try await client.presignedRequestForGetObject(
-                input: GetObjectInput(
-                    bucket: config.bucket,
-                    key: key
-                ),
-                expiration: config.presignedURLExpiration
-            )
-
-            guard let url = request.url else {
-                throw S3Error.failedToGenerateDownloadURL
-            }
-
-            return url.absoluteString
-        case .publicURL(let baseURL):
-            if let baseURL, !baseURL.isEmpty {
-                return "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/\(key)"
-            }
-
-            return "https://\(config.bucket).s3.\(config.region).amazonaws.com/\(key)"
+    /// Builds the public URL for an uploaded object. Objects are served
+    /// publicly (via bucket policy), optionally through a CDN base URL such as
+    /// a CloudFront domain.
+    private func makeDownloadURL(config: Config, key: String) -> String {
+        if let baseURL = config.publicBaseURL, !baseURL.isEmpty {
+            return "\(baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/\(key)"
         }
+
+        return "https://\(config.bucket).s3.\(config.region).amazonaws.com/\(key)"
     }
 
     private static func describe(error: Error) -> String {
@@ -239,7 +192,6 @@ func firstNonEmptyValue(_ candidates: String?...) -> String? {
 enum S3Error: LocalizedError {
     case missingCredentials
     case missingBucket
-    case failedToGenerateDownloadURL
     case serviceFailure(String)
 
     var errorDescription: String? {
@@ -248,8 +200,6 @@ enum S3Error: LocalizedError {
             return "Missing AWS credentials. Add them in Settings or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
         case .missingBucket:
             return "Missing S3 bucket. Add it in Settings or set S3_BUCKET."
-        case .failedToGenerateDownloadURL:
-            return "Upload succeeded, but the app could not generate a download URL"
         case .serviceFailure(let message):
             return message
         }

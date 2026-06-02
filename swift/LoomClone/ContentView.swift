@@ -382,15 +382,8 @@ private struct AWSSettingsView: View {
                     TextField("Bucket", text: $formData.bucket)
                         .textFieldStyle(.roundedBorder)
 
-                    Toggle("Use public object URLs", isOn: $formData.usePublicURLs)
-
-                    if formData.usePublicURLs {
-                        TextField("Public Base URL (optional)", text: $formData.publicBaseURL)
-                            .textFieldStyle(.roundedBorder)
-                    } else {
-                        TextField("Presigned URL Expiration (seconds)", text: $formData.presignedURLExpiration)
-                            .textFieldStyle(.roundedBorder)
-                    }
+                    TextField("Public Base URL (CDN, optional)", text: $formData.publicBaseURL)
+                        .textFieldStyle(.roundedBorder)
                 }
 
                 Section("Transcription") {

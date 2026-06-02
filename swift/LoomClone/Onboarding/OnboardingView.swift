@@ -329,7 +329,6 @@ struct OnboardingView: View {
         case .welcome, .permissions:
             advance()
         case .s3:
-            formData.usePublicURLs = true
             AWSSettingsStorage.save(formData)
             advance()
         case .groq:
