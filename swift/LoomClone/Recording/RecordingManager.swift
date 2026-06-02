@@ -580,6 +580,9 @@ class RecordingManager: @unchecked Sendable {
 
             // Setup AVAssetWriter
             let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+            // Place the moov atom at the front of the file so it can start
+            // playing in a browser before the whole file is downloaded.
+            writer.shouldOptimizeForNetworkUse = true
 
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
