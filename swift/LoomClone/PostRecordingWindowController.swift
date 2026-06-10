@@ -9,9 +9,9 @@ final class PostRecordingWindowController: NSObject, NSWindowDelegate {
         window?.isVisible ?? false
     }
 
-    func show(fileURL: URL, manager: RecordingManager) {
+    func show(fileURL: URL, manager: RecordingManager, deleteOnDiscard: Bool = true) {
         self.manager = manager
-        let view = PostRecordingView(fileURL: fileURL, manager: manager) { [weak self] in
+        let view = PostRecordingView(fileURL: fileURL, manager: manager, deleteOnDiscard: deleteOnDiscard) { [weak self] in
             self?.close()
         }
 

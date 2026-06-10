@@ -132,11 +132,12 @@ class S3Uploader: @unchecked Sendable {
 
         let client = S3Client(config: s3Config)
         let key = "recordings/\(fileName)"
+        let contentType = fileURL.pathExtension.lowercased() == "mov" ? "video/quicktime" : "video/mp4"
 
         let input = PutObjectInput(
             body: .data(fileData),
             bucket: config.bucket,
-            contentType: "video/mp4",
+            contentType: contentType,
             key: key
         )
 
