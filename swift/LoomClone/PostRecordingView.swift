@@ -4,7 +4,6 @@ import AVKit
 struct PostRecordingView: View {
     let fileURL: URL
     @Bindable var manager: RecordingManager
-    var deleteOnDiscard: Bool = true
     let onDismiss: () -> Void
 
     @State private var title = ""
@@ -121,9 +120,7 @@ struct PostRecordingView: View {
         HStack {
             Button("Discard") {
                 player?.pause()
-                if deleteOnDiscard {
-                    try? FileManager.default.removeItem(at: fileURL)
-                }
+                try? FileManager.default.removeItem(at: fileURL)
                 manager.reset()
                 onDismiss()
             }

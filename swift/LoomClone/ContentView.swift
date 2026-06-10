@@ -112,7 +112,18 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        onUploadExternalVideo?(url)
+
+        // Copy into a uniquely named temp file so the S3 object key never
+        // collides with another upload that happens to share the same filename.
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loomclone-\(UUID().uuidString).\(url.pathExtension)")
+        do {
+            try FileManager.default.copyItem(at: url, to: tempURL)
+        } catch {
+            manager.state = .error("Failed to open video: \(error.localizedDescription)")
+            return
+        }
+        onUploadExternalVideo?(tempURL)
     }
 
     private var recordingControlsView: some View {

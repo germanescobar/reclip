@@ -134,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             rootView: ContentView(manager: manager, authManager: authManager) { [weak self] url in
                 guard let self else { return }
                 self.closePopover()
-                self.postRecordingWindowController.show(fileURL: url, manager: self.manager, deleteOnDiscard: false)
+                self.postRecordingWindowController.show(fileURL: url, manager: self.manager)
             }
         )
     }
