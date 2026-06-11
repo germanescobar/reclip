@@ -5,12 +5,13 @@ class CameraCapturer: NSObject, @unchecked Sendable {
     let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let audioOutput = AVCaptureAudioDataOutput()
-    private let sessionQueue = DispatchQueue(label: "com.loomclone.camera.session")
-    private let videoQueue = DispatchQueue(label: "com.loomclone.camera.video")
-    private let audioQueue = DispatchQueue(label: "com.loomclone.camera.audio")
+    private let sessionQueue = DispatchQueue(label: "com.loomclone.camera.session", qos: .userInitiated)
+    private let videoQueue = DispatchQueue(label: "com.loomclone.camera.video", qos: .userInitiated)
+    private let audioQueue = DispatchQueue(label: "com.loomclone.camera.audio", qos: .userInitiated)
     private var isConfigured = false
 
     var onCameraFrame: ((CMSampleBuffer) -> Void)?
+    var onCameraFrameDropped: ((String) -> Void)?
     var onMicAudio: ((CMSampleBuffer) -> Void)?
 
     static func availableCameras() -> [AVCaptureDevice] {
@@ -87,6 +88,7 @@ class CameraCapturer: NSObject, @unchecked Sendable {
                         let videoInput = try AVCaptureDeviceInput(device: cam)
                         guard session.canAddInput(videoInput) else { throw CameraError.cannotAddCameraInput }
                         session.addInput(videoInput)
+                        Self.lockCameraFormat(cam)
                     }
 
                     if includeMicrophone {
@@ -104,7 +106,9 @@ class CameraCapturer: NSObject, @unchecked Sendable {
 
             session.beginConfiguration()
             defer { session.commitConfiguration() }
-            session.sessionPreset = .medium
+            // No session preset: the camera's activeFormat is pinned explicitly
+            // after the input is added. Preset negotiation put some UVC webcams
+            // into modes that run seconds behind the sensor.
 
             do {
                 if includeCamera {
@@ -113,6 +117,7 @@ class CameraCapturer: NSObject, @unchecked Sendable {
                     let videoInput = try AVCaptureDeviceInput(device: cam)
                     guard session.canAddInput(videoInput) else { throw CameraError.cannotAddCameraInput }
                     session.addInput(videoInput)
+                    Self.lockCameraFormat(cam)
                 }
 
                 if includeMicrophone {
@@ -123,9 +128,9 @@ class CameraCapturer: NSObject, @unchecked Sendable {
                     session.addInput(audioInput)
                 }
 
-                videoOutput.videoSettings = [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-                ]
+                // Deliver frames in the camera's native format: forcing BGRA adds
+                // a per-frame conversion in the capture pipeline that can starve
+                // delivery under load, and Core Image reads the native format.
                 videoOutput.setSampleBufferDelegate(self, queue: videoQueue)
                 videoOutput.alwaysDiscardsLateVideoFrames = true
                 if session.canAddOutput(videoOutput) {
@@ -145,6 +150,53 @@ class CameraCapturer: NSObject, @unchecked Sendable {
 
         if let thrownError {
             throw thrownError
+        }
+    }
+
+    /// Pins an explicit device format (~VGA at 30fps) instead of relying on
+    /// session-preset negotiation. The overlay bubble only needs ~200px, and
+    /// preset-negotiated modes on some UVC webcams run seconds behind the
+    /// sensor.
+    private static func lockCameraFormat(_ device: AVCaptureDevice) {
+        let candidates = device.formats.filter { format in
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return dims.width >= 640 && dims.height >= 480 &&
+                format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 30 }
+        }
+
+        let chosen = candidates.min { a, b in
+            let da = CMVideoFormatDescriptionGetDimensions(a.formatDescription)
+            let db = CMVideoFormatDescriptionGetDimensions(b.formatDescription)
+            return Int(da.width) * Int(da.height) < Int(db.width) * Int(db.height)
+        }
+
+        guard let chosen else {
+            avSyncLog("camera: no >=640x480@30 format found; keeping \(device.activeFormat)")
+            return
+        }
+
+        do {
+            try device.lockForConfiguration()
+            device.activeFormat = chosen
+            // Target 30fps, clamped into the range's own duration bounds:
+            // DAL/USB cameras throw on durations outside the supported range,
+            // and the range minimum would pin 60fps+ modes to their maximum
+            // rate, far above what the 30fps compositing pipeline needs.
+            if let range = chosen.videoSupportedFrameRateRanges.max(by: { $0.maxFrameRate < $1.maxFrameRate }) {
+                var duration = CMTime(value: 1, timescale: 30)
+                if CMTimeCompare(duration, range.minFrameDuration) < 0 {
+                    duration = range.minFrameDuration
+                }
+                if CMTimeCompare(duration, range.maxFrameDuration) > 0 {
+                    duration = range.maxFrameDuration
+                }
+                device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
+            }
+            device.unlockForConfiguration()
+            avSyncLog("camera: locked format \(chosen)")
+        } catch {
+            avSyncLog("camera: failed to lock format: \(error.localizedDescription)")
         }
     }
 
@@ -184,6 +236,16 @@ extension CameraCapturer: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptur
         } else if output == audioOutput {
             onMicAudio?(sampleBuffer)
         }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didDrop sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard output == videoOutput else { return }
+        let reason = CMGetAttachment(
+            sampleBuffer,
+            key: kCMSampleBufferAttachmentKey_DroppedFrameReason,
+            attachmentModeOut: nil
+        ) as? String ?? "unknown"
+        onCameraFrameDropped?(reason)
     }
 }
 

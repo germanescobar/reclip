@@ -49,11 +49,12 @@ private extension NSScreen {
 
 class ScreenCapturer: NSObject, @unchecked Sendable {
     private var stream: SCStream?
-    private let videoQueue = DispatchQueue(label: "com.loomclone.screen.video")
-    private let audioQueue = DispatchQueue(label: "com.loomclone.screen.audio")
+    private let videoQueue = DispatchQueue(label: "com.loomclone.screen.video", qos: .userInitiated)
+    private let audioQueue = DispatchQueue(label: "com.loomclone.screen.audio", qos: .userInitiated)
 
     var onScreenFrame: ((CMSampleBuffer) -> Void)?
     var onSystemAudio: ((CMSampleBuffer) -> Void)?
+    private var loggedFirstFrame = false
 
     private(set) var width: Int = 1920
     private(set) var height: Int = 1080
@@ -105,14 +106,20 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         width = target.width
         height = target.height
 
+        // Exclude this app's own windows (camera bubble, recording HUD) from
+        // the capture: the camera is composited into the video separately, so
+        // capturing the live bubble too would put a second, duplicated camera
+        // image in the recording.
+        let ownWindows = await (try? Self.ownWindows()) ?? []
+
         let filter: SCContentFilter
         let sourceRect: CGRect?
         switch target {
         case .display(let display):
-            filter = SCContentFilter(display: display, excludingWindows: [])
+            filter = SCContentFilter(display: display, excludingWindows: ownWindows)
             sourceRect = nil
         case .area(let display, let rect, _):
-            filter = SCContentFilter(display: display, excludingWindows: [])
+            filter = SCContentFilter(display: display, excludingWindows: ownWindows)
             sourceRect = rect
         }
 
@@ -133,6 +140,7 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         self.stream = stream
+        loggedFirstFrame = false
 
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: videoQueue)
         if captureSystemAudio {
@@ -140,6 +148,13 @@ class ScreenCapturer: NSObject, @unchecked Sendable {
         }
 
         try await stream.startCapture()
+        avSyncLog("screen capture started (\(width)x\(height), excluding \(ownWindows.count) own windows)")
+    }
+
+    private static func ownWindows() async throws -> [SCWindow] {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let bundleID = Bundle.main.bundleIdentifier
+        return content.windows.filter { $0.owningApplication?.bundleIdentifier == bundleID }
     }
 
     func stopCapture() async throws {
@@ -164,6 +179,10 @@ extension ScreenCapturer: SCStreamOutput {
 
         switch type {
         case .screen:
+            if !loggedFirstFrame {
+                loggedFirstFrame = true
+                avSyncLog("first screen frame delivered")
+            }
             onScreenFrame?(sampleBuffer)
         case .audio:
             onSystemAudio?(sampleBuffer)
@@ -177,6 +196,6 @@ extension ScreenCapturer: SCStreamOutput {
 
 extension ScreenCapturer: SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        print("Screen capture stopped with error: \(error.localizedDescription)")
+        avSyncLog("screen capture stopped with error: \(error)")
     }
 }

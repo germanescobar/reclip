@@ -9,14 +9,22 @@ class VideoCompositor: @unchecked Sendable {
     private var pixelBufferPool: CVPixelBufferPool?
     private var poolWidth: Int?
     private var poolHeight: Int?
+    private var cameraPixelBufferPool: CVPixelBufferPool?
+    private var cameraPoolWidth: Int?
+    private var cameraPoolHeight: Int?
     private let lock = NSLock()
     private var _latestCameraBuffer: CVPixelBuffer?
+    private var _latestCameraPTS: CMTime?
     private var _overlayNormalizedCenter = CGPoint(x: 0.85, y: 0.2)
     private let overlaySize: CGFloat = 200
 
     var latestCameraBuffer: CVPixelBuffer? {
         get { lock.withLock { _latestCameraBuffer } }
         set { lock.withLock { _latestCameraBuffer = newValue } }
+    }
+
+    var latestCameraPTS: CMTime? {
+        lock.withLock { _latestCameraPTS }
     }
 
     var overlayNormalizedCenter: CGPoint {
@@ -40,42 +48,80 @@ class VideoCompositor: @unchecked Sendable {
 
     func updateCameraFrame(_ sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        latestCameraBuffer = pixelBuffer
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        // Copy the frame out of the capture pool immediately. Retaining the
+        // delivered buffer starves AVCaptureVideoDataOutput's small buffer
+        // pool and the camera stops delivering frames in multi-second bursts.
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let pool: CVPixelBufferPool? = lock.withLock {
+            if cameraPixelBufferPool == nil || cameraPoolWidth != width || cameraPoolHeight != height {
+                cameraPixelBufferPool = createPixelBufferPool(width: width, height: height)
+                cameraPoolWidth = width
+                cameraPoolHeight = height
+            }
+            return cameraPixelBufferPool
+        }
+
+        var copy: CVPixelBuffer?
+        guard let pool,
+              CVPixelBufferPoolCreatePixelBuffer(nil, pool, &copy) == kCVReturnSuccess,
+              let copy else {
+            return
+        }
+        ciContext.render(CIImage(cvPixelBuffer: pixelBuffer), to: copy)
+
+        lock.withLock {
+            _latestCameraBuffer = copy
+            _latestCameraPTS = pts
+        }
     }
 
     func reset() {
-        latestCameraBuffer = nil
-        overlayNormalizedCenter = CGPoint(x: 0.85, y: 0.2)
-        pixelBufferPool = nil
-        poolWidth = nil
-        poolHeight = nil
+        lock.withLock {
+            _latestCameraBuffer = nil
+            _latestCameraPTS = nil
+            _overlayNormalizedCenter = CGPoint(x: 0.85, y: 0.2)
+            pixelBufferPool = nil
+            poolWidth = nil
+            poolHeight = nil
+            cameraPixelBufferPool = nil
+            cameraPoolWidth = nil
+            cameraPoolHeight = nil
+        }
     }
 
     func compositeFrame(_ screenBuffer: CMSampleBuffer, width: Int, height: Int) -> CMSampleBuffer? {
         guard let screenPixelBuffer = CMSampleBufferGetImageBuffer(screenBuffer) else { return nil }
 
+        // Without a camera frame there is nothing to draw; pass the screen
+        // frame through untouched instead of paying a full-frame GPU render.
+        guard let cameraPixelBuffer = latestCameraBuffer else { return screenBuffer }
+
         let screenImage = CIImage(cvPixelBuffer: screenPixelBuffer)
         var outputImage = screenImage
 
-        if let cameraPixelBuffer = latestCameraBuffer {
-            let cameraImage = CIImage(cvPixelBuffer: cameraPixelBuffer)
-            if let overlayImage = createCircularOverlay(
-                cameraImage: cameraImage,
-                screenWidth: CGFloat(width),
-                screenHeight: CGFloat(height)
-            ) {
-                outputImage = overlayImage.composited(over: screenImage)
-            }
+        let cameraImage = CIImage(cvPixelBuffer: cameraPixelBuffer)
+        if let overlayImage = createCircularOverlay(
+            cameraImage: cameraImage,
+            screenWidth: CGFloat(width),
+            screenHeight: CGFloat(height)
+        ) {
+            outputImage = overlayImage.composited(over: screenImage)
         }
 
         // Get or create pixel buffer pool
-        if pixelBufferPool == nil || poolWidth != width || poolHeight != height {
-            pixelBufferPool = createPixelBufferPool(width: width, height: height)
-            poolWidth = width
-            poolHeight = height
+        let pool: CVPixelBufferPool? = lock.withLock {
+            if pixelBufferPool == nil || poolWidth != width || poolHeight != height {
+                pixelBufferPool = createPixelBufferPool(width: width, height: height)
+                poolWidth = width
+                poolHeight = height
+            }
+            return pixelBufferPool
         }
 
-        guard let pool = pixelBufferPool else { return nil }
+        guard let pool else { return nil }
 
         var outputPixelBuffer: CVPixelBuffer?
         let status = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &outputPixelBuffer)
