@@ -154,7 +154,14 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
     const handlePlay = () => setIsPlaying(true)
     const handlePause = () => setIsPlaying(false)
     const handleTimeUpdate = () => setCurrentTime(video.currentTime)
-    const handleLoadedMetadata = () => setDuration(video.duration)
+    const handleLoadedMetadata = () => {
+      // Re-assert the currently selected rate in case the player reset it
+      // after a metadata load (e.g. when the source loads asynchronously and
+      // the browser clears playbackRate to 1.0). Use the React state, not the
+      // default, so a user-chosen speed survives subsequent metadata events.
+      video.playbackRate = playbackSpeed
+      setDuration(video.duration)
+    }
     const handleWaiting = () => setIsBuffering(true)
     const handleCanPlay = () => setIsBuffering(false)
 
@@ -173,7 +180,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
       video.removeEventListener("waiting", handleWaiting)
       video.removeEventListener("canplay", handleCanPlay)
     }
-  }, [])
+  }, [playbackSpeed])
 
   useEffect(() => {
     const handleFullscreenChange = () => {
