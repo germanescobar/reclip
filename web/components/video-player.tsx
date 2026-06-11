@@ -154,7 +154,13 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
     const handlePlay = () => setIsPlaying(true)
     const handlePause = () => setIsPlaying(false)
     const handleTimeUpdate = () => setCurrentTime(video.currentTime)
-    const handleLoadedMetadata = () => setDuration(video.duration)
+    const handleLoadedMetadata = () => {
+      // Re-assert the default rate in case the player reset it after the
+      // initial mount (e.g. when the source loads asynchronously and the
+      // browser clears the playbackRate to 1.0 on metadata load).
+      video.playbackRate = DEFAULT_PLAYBACK_SPEED
+      setDuration(video.duration)
+    }
     const handleWaiting = () => setIsBuffering(true)
     const handleCanPlay = () => setIsBuffering(false)
 
