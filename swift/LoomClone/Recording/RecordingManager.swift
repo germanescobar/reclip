@@ -202,12 +202,28 @@ class RecordingManager: @unchecked Sendable {
 
     private var sessionStarted = false
     private var sessionStartTime: CMTime?
+    private var micClockOffset: CMTime?
+    private var minimumMicSkew: CMTime?
+    private var micSkewSampleCount = 0
     private var startTime: Date?
     private var durationTimer: Timer?
     private var pendingScreenSamples: [CMSampleBuffer] = []
     private var pendingAudioSamples: [CMSampleBuffer] = []
-    private var firstScreenPTS: CMTime?
-    private var firstAudioPTS: CMTime?
+    private var queuedAudioSamples: [CMSampleBuffer] = []
+    private var nextExpectedAudioPTS: CMTime?
+    private var micSecondsReceived: Double = 0
+    private var micSecondsAppended: Double = 0
+    private var micSecondsFilled: Double = 0
+    private var micGapCount = 0
+    private var overlayLagSum: Double = 0
+    private var overlayLagMax: Double = 0
+    private var overlayLagCount = 0
+    private var cameraFramesDelivered = 0
+    private var cameraMaxArrivalGap: Double = 0
+    private var lastCameraArrival: CMTime?
+    private var cameraDropsByReason: [String: Int] = [:]
+    private var cameraPTSSkewSum: Double = 0
+    private var cameraPTSSkewMax: Double = 0
     private var lastVerifiedMicrophoneSignalAt: Date?
     private var hasWrittenAudioSamples = false
     private var pauseOffset: CMTime = .zero
@@ -217,11 +233,17 @@ class RecordingManager: @unchecked Sendable {
     @ObservationIgnored private var previewRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var deviceObserverTokens: [NSObjectProtocol] = []
 
-    private let writerQueue = DispatchQueue(label: "com.loomclone.writer")
+    private let writerQueue = DispatchQueue(label: "com.loomclone.writer", qos: .userInitiated)
+    private let monitoringQueue = DispatchQueue(label: "com.loomclone.monitoring", qos: .utility)
 
     init() {
         configureCaptureCallbacks()
         observeCaptureDeviceChanges()
+
+        if let executableURL = Bundle.main.executableURL,
+           let builtAt = (try? FileManager.default.attributesOfItem(atPath: executableURL.path))?[.modificationDate] as? Date {
+            avSyncLog("app launched (binary built \(builtAt))")
+        }
     }
 
     deinit {
@@ -484,12 +506,14 @@ class RecordingManager: @unchecked Sendable {
         }
 
         do {
-            try restartCameraSession(
-                camera: selectedCamera,
-                microphone: selectedMicrophone,
-                includeCamera: true,
-                includeMicrophone: true
-            )
+            if !isCameraSessionReady(camera: selectedCamera, microphone: selectedMicrophone) {
+                try restartCameraSession(
+                    camera: selectedCamera,
+                    microphone: selectedMicrophone,
+                    includeCamera: true,
+                    includeMicrophone: true
+                )
+            }
 
             let previewDisplayID = display?.displayID
             await MainActor.run {
@@ -512,7 +536,10 @@ class RecordingManager: @unchecked Sendable {
     }
 
     func hideCameraPreview() {
-        guard !isRecording else { return }
+        // Keep the session and bubble alive while a recording is being
+        // prepared, running, or paused — the popover closing must not tear
+        // down the capture pipeline mid-recording.
+        guard state != .preparing, !isRecording, !isPaused else { return }
         previewRefreshTask?.cancel()
         previewRefreshTask = nil
         cameraCapturer.stopCapture(waitUntilStopped: true)
@@ -537,12 +564,6 @@ class RecordingManager: @unchecked Sendable {
         compositor.overlayNormalizedCenter = cameraOverlayPosition
 
         do {
-            let microphoneReady = await runMicrophoneCheckIfNeeded()
-            guard microphoneReady else {
-                state = .error("No microphone signal detected. Run the mic check, verify the selected input, and try again.")
-                return
-            }
-
             let targetDisplayID = target.displayID
             let hasRecordingScreen = await MainActor.run {
                 (Self.screen(for: targetDisplayID) ?? Self.preferredScreen()) != nil
@@ -572,6 +593,14 @@ class RecordingManager: @unchecked Sendable {
                     includeCamera: true,
                     includeMicrophone: true
                 )
+            }
+
+            // Run the mic check against the session that will actually record,
+            // so it never needs to tear the session down and rebuild it.
+            let microphoneReady = await runMicrophoneCheckIfNeeded()
+            guard microphoneReady else {
+                state = .error("No microphone signal detected. Run the mic check, verify the selected input, and try again.")
+                return
             }
 
             // Setup output file
@@ -672,9 +701,11 @@ class RecordingManager: @unchecked Sendable {
             floatingCameraWindowController.hide()
         }
 
-        // Stop capture sources
-        cameraCapturer.stopCapture()
+        // Stop the screen first: its stream takes over a second to wind down
+        // and keeps delivering frames, which would extend the video track past
+        // the end of the audio if the mic were stopped first.
         try? await screenCapturer.stopCapture()
+        cameraCapturer.stopCapture()
 
         // Finalize the asset writer
         guard let writer = assetWriter else {
@@ -688,6 +719,50 @@ class RecordingManager: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             writerQueue.async { [writerBox] in
                 let writer = writerBox.writer
+
+                // Finalize only a writer that is actually writing. Calling
+                // markAsFinished/cancelWriting on a writer in .unknown state
+                // throws an ObjC exception and takes the app down.
+                guard self.sessionStarted, writer.status == .writing else {
+                    avSyncLog("stop: not finalizing (sessionStarted=\(self.sessionStarted), writer status \(writer.status.rawValue), error: \(writer.error.map(String.init(describing:)) ?? "none"))")
+                    if writer.status == .writing {
+                        writer.cancelWriting()
+                    }
+                    DispatchQueue.main.async {
+                        self.state = .error("Recording failed: \(writer.error?.localizedDescription ?? "no screen frames were captured")")
+                    }
+                    continuation.resume()
+                    return
+                }
+
+                if let input = self.audioInput {
+                    self.drainQueuedAudioSamples(into: input)
+                }
+                avSyncLog(String(format: "stop: mic audio received %.3fs, appended %.3fs (silence-filled %.3fs across %d gaps), still queued %d buffers",
+                                      self.micSecondsReceived,
+                                      self.micSecondsAppended,
+                                      self.micSecondsFilled,
+                                      self.micGapCount,
+                                      self.queuedAudioSamples.count))
+                if self.overlayLagCount > 0 {
+                    avSyncLog(String(format: "stop: camera overlay staleness avg %.3fs, max %.3fs over %d composited frames",
+                                          self.overlayLagSum / Double(self.overlayLagCount),
+                                          self.overlayLagMax,
+                                          self.overlayLagCount))
+                }
+                let drops = self.cameraDropsByReason.isEmpty
+                    ? "none"
+                    : self.cameraDropsByReason.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+                avSyncLog(String(format: "stop: camera frames delivered %d, max inter-arrival gap %.3fs, drops: %@",
+                                      self.cameraFramesDelivered,
+                                      self.cameraMaxArrivalGap,
+                                      drops))
+                if self.cameraFramesDelivered > 0 {
+                    avSyncLog(String(format: "stop: camera PTS skew (arrival - PTS) avg %.3fs, max %.3fs",
+                                          self.cameraPTSSkewSum / Double(self.cameraFramesDelivered),
+                                          self.cameraPTSSkewMax))
+                }
+
                 self.videoInput?.markAsFinished()
                 self.audioInput?.markAsFinished()
 
@@ -812,10 +887,6 @@ class RecordingManager: @unchecked Sendable {
 
             if self.state == .paused { return }
 
-            if self.firstScreenPTS == nil {
-                self.firstScreenPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            }
-
             if !self.sessionStarted {
                 self.pendingScreenSamples.append(sampleBuffer)
                 self.tryStartSessionIfReady(writer: writer)
@@ -831,11 +902,16 @@ class RecordingManager: @unchecked Sendable {
     }
 
     private func handleMicAudio(_ sampleBuffer: CMSampleBuffer) {
-        updateMicrophoneMonitoring(with: sampleBuffer)
+        // Keep the capture delegate callback as fast as possible: a slow
+        // delegate makes AVCaptureAudioDataOutput drop buffers at the source.
+        monitoringQueue.async { [weak self] in
+            self?.updateMicrophoneMonitoring(with: sampleBuffer)
+        }
         handleAudioSample(sampleBuffer)
     }
 
     private func handleAudioSample(_ sampleBuffer: CMSampleBuffer) {
+        let arrivalTime = CMClockGetTime(CMClockGetHostTimeClock())
         writerQueue.async { [weak self] in
             guard let self,
                   let writer = self.assetWriter,
@@ -845,9 +921,11 @@ class RecordingManager: @unchecked Sendable {
 
             if self.state == .paused { return }
 
-            if self.firstAudioPTS == nil {
-                self.firstAudioPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if self.micClockOffset == nil {
+                self.updateMicClockOffsetMeasurement(for: sampleBuffer, arrivalTime: arrivalTime)
             }
+
+            self.micSecondsReceived += CMSampleBufferGetDuration(sampleBuffer).seconds
 
             if !self.sessionStarted {
                 self.pendingAudioSamples.append(sampleBuffer)
@@ -871,6 +949,14 @@ class RecordingManager: @unchecked Sendable {
         writer.startSession(atSourceTime: screenPTS)
         sessionStarted = true
         sessionStartTime = screenPTS
+
+        avSyncLog(String(format: "session started at screen PTS %.3fs (host clock %.3fs, pending screen=%d audio=%d, camera \"%@\", mic \"%@\")",
+                              screenPTS.seconds,
+                              CMClockGetTime(CMClockGetHostTimeClock()).seconds,
+                              pendingScreenSamples.count,
+                              pendingAudioSamples.count,
+                              selectedCamera?.localizedName ?? "none",
+                              selectedMicrophone?.localizedName ?? "none"))
 
         flushPendingSamples(writer: writer)
     }
@@ -902,6 +988,13 @@ class RecordingManager: @unchecked Sendable {
     private func appendScreenSample(_ sampleBuffer: CMSampleBuffer, writer: AVAssetWriter, input: AVAssetWriterInput) {
         guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
 
+        if let cameraPTS = compositor.latestCameraPTS {
+            let lag = CMTimeSubtract(CMSampleBufferGetPresentationTimeStamp(sampleBuffer), cameraPTS).seconds
+            overlayLagSum += lag
+            overlayLagMax = max(overlayLagMax, lag)
+            overlayLagCount += 1
+        }
+
         if let composited = compositor.compositeFrame(
             sampleBuffer,
             width: screenCapturer.width,
@@ -913,22 +1006,154 @@ class RecordingManager: @unchecked Sendable {
     }
 
     private func appendAudioSample(_ sampleBuffer: CMSampleBuffer, writer: AVAssetWriter, input: AVAssetWriterInput) {
-        guard writer.status == .writing, input.isReadyForMoreMediaData else { return }
+        guard writer.status == .writing else { return }
 
-        guard let retimedSample = retimedMicSampleBuffer(sampleBuffer) else { return }
-        let adjusted = adjustForPauseOffset(retimedSample) ?? retimedSample
-        guard input.append(adjusted) else { return }
+        // Correct mic streams whose PTS are skewed from the host clock
+        // (common with Bluetooth/Continuity inputs), then align with pauses.
+        var adjusted = sampleBuffer
+        if let micClockOffset, micClockOffset != .zero {
+            adjusted = retimed(adjusted, offsetBy: micClockOffset) ?? adjusted
+        }
+        adjusted = adjustForPauseOffset(adjusted) ?? adjusted
 
-        hasWrittenAudioSamples = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.recordingAudioStatus = .live("Recording microphone audio from \(self.selectedMicrophoneName).")
+        // Flaky sources (Bluetooth dropouts, capture-side drops) deliver less
+        // audio than wall time. The AAC encoder collapses those gaps, shifting
+        // the rest of the track earlier, so fill any hole with silence to keep
+        // the timeline honest.
+        let pts = CMSampleBufferGetPresentationTimeStamp(adjusted)
+        if let nextExpectedAudioPTS {
+            let gap = CMTimeSubtract(pts, nextExpectedAudioPTS)
+            if gap.seconds > 0.01, gap.seconds < 30 {
+                // Fill in ~1s chunks so a long dropout never allocates one
+                // giant buffer.
+                var fillPTS = nextExpectedAudioPTS
+                var remaining = gap.seconds
+                while remaining > 0.001 {
+                    let chunk = CMTime(seconds: min(remaining, 1.0), preferredTimescale: 48_000)
+                    guard let silence = Self.silenceBuffer(matching: adjusted, at: fillPTS, duration: chunk) else { break }
+                    queuedAudioSamples.append(silence)
+                    let filled = CMSampleBufferGetDuration(silence)
+                    micSecondsFilled += filled.seconds
+                    fillPTS = CMTimeAdd(fillPTS, filled)
+                    remaining -= filled.seconds
+                }
+                micGapCount += 1
+            }
+        }
+        nextExpectedAudioPTS = CMTimeAdd(pts, CMSampleBufferGetDuration(adjusted))
+
+        // Never drop mic buffers: queue while the input is busy and drain in
+        // order once it is ready.
+        queuedAudioSamples.append(adjusted)
+        drainQueuedAudioSamples(into: input)
+    }
+
+    private func drainQueuedAudioSamples(into input: AVAssetWriterInput) {
+        while let sample = queuedAudioSamples.first, input.isReadyForMoreMediaData {
+            queuedAudioSamples.removeFirst()
+
+            if !hasWrittenAudioSamples, let sessionStartTime {
+                let offset = CMTimeSubtract(CMSampleBufferGetPresentationTimeStamp(sample), sessionStartTime)
+                avSyncLog(String(format: "first audio sample offset vs session start: %+.3fs", offset.seconds))
+            }
+
+            guard input.append(sample) else {
+                avSyncLog("audio append failed: \(assetWriter?.error.map(String.init(describing:)) ?? "unknown error")")
+                return
+            }
+
+            micSecondsAppended += CMSampleBufferGetDuration(sample).seconds
+
+            if !hasWrittenAudioSamples {
+                hasWrittenAudioSamples = true
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.recordingAudioStatus = .live("Recording microphone audio from \(self.selectedMicrophoneName).")
+                }
+            }
         }
     }
 
-    private func adjustForPauseOffset(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
-        guard pauseOffset != .zero else { return sampleBuffer }
+    /// Mic PTS should track the host clock (screen frames do). Bluetooth and
+    /// Continuity inputs can deliver PTS anchored seconds in the past, which
+    /// shifts the audio track relative to video. Measure skew against arrival
+    /// time over the first several buffers — using the minimum, since delivery
+    /// delay only ever adds latency, and a single late first buffer must not
+    /// mis-retime the whole recording — then correct the stream when the skew
+    /// exceeds what plausible delivery latency can explain.
+    private func updateMicClockOffsetMeasurement(for sampleBuffer: CMSampleBuffer, arrivalTime: CMTime) {
+        let maximumPlausibleLatency = 0.5
+        let decisionSampleCount = 10
 
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let duration = CMSampleBufferGetDuration(sampleBuffer)
+        let bufferEnd = duration.isValid ? CMTimeAdd(pts, duration) : pts
+        let skew = CMTimeSubtract(arrivalTime, bufferEnd)
+
+        if minimumMicSkew == nil || abs(skew.seconds) < abs(minimumMicSkew!.seconds) {
+            minimumMicSkew = skew
+        }
+        micSkewSampleCount += 1
+        guard micSkewSampleCount >= decisionSampleCount, let decidedSkew = minimumMicSkew else { return }
+
+        if abs(decidedSkew.seconds) > maximumPlausibleLatency {
+            avSyncLog(String(format: "mic PTS skew vs host clock: %+.3fs over %d buffers (correcting audio timestamps)",
+                             decidedSkew.seconds, micSkewSampleCount))
+            micClockOffset = decidedSkew
+        } else {
+            avSyncLog(String(format: "mic PTS skew vs host clock: %+.3fs over %d buffers (within tolerance, no correction)",
+                             decidedSkew.seconds, micSkewSampleCount))
+            micClockOffset = .zero
+        }
+    }
+
+    /// Builds a silent PCM buffer matching the source format, used to plug
+    /// holes left by mic dropouts so the audio timeline keeps real-time pacing.
+    private static func silenceBuffer(matching sample: CMSampleBuffer, at pts: CMTime, duration: CMTime) -> CMSampleBuffer? {
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sample),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee,
+              asbd.mFormatID == kAudioFormatLinearPCM,
+              asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0,
+              asbd.mBytesPerFrame > 0,
+              asbd.mSampleRate > 0 else {
+            avSyncLog("cannot fill audio gap: source is not interleaved PCM")
+            return nil
+        }
+
+        let frames = Int((duration.seconds * asbd.mSampleRate).rounded())
+        guard frames > 0 else { return nil }
+
+        let byteCount = frames * Int(asbd.mBytesPerFrame)
+        var blockBuffer: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: byteCount,
+            blockAllocator: nil, customBlockSource: nil, offsetToData: 0,
+            dataLength: byteCount, flags: 0, blockBufferOut: &blockBuffer
+        ) == noErr, let blockBuffer,
+        CMBlockBufferFillDataBytes(
+            with: 0, blockBuffer: blockBuffer, offsetIntoDestination: 0, dataLength: byteCount
+        ) == noErr else {
+            return nil
+        }
+
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(asbd.mSampleRate)),
+            presentationTimeStamp: pts,
+            decodeTimeStamp: .invalid
+        )
+        var silence: CMSampleBuffer?
+        guard CMSampleBufferCreate(
+            allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, dataReady: true,
+            makeDataReadyCallback: nil, refcon: nil, formatDescription: formatDescription,
+            sampleCount: frames, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &silence
+        ) == noErr else {
+            return nil
+        }
+        return silence
+    }
+
+    private func retimed(_ sampleBuffer: CMSampleBuffer, offsetBy offset: CMTime) -> CMSampleBuffer? {
         let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
         guard sampleCount > 0 else { return sampleBuffer }
 
@@ -946,50 +1171,6 @@ class RecordingManager: @unchecked Sendable {
 
         guard status == noErr else { return sampleBuffer }
 
-        let updatedTiming = timingInfo.map { info in
-            CMSampleTimingInfo(
-                duration: info.duration,
-                presentationTimeStamp: CMTimeSubtract(info.presentationTimeStamp, pauseOffset),
-                decodeTimeStamp: info.decodeTimeStamp.isValid ? CMTimeSubtract(info.decodeTimeStamp, pauseOffset) : info.decodeTimeStamp
-            )
-        }
-
-        var adjustedSampleBuffer: CMSampleBuffer?
-        let copyStatus = CMSampleBufferCreateCopyWithNewTiming(
-            allocator: kCFAllocatorDefault,
-            sampleBuffer: sampleBuffer,
-            sampleTimingEntryCount: updatedTiming.count,
-            sampleTimingArray: updatedTiming,
-            sampleBufferOut: &adjustedSampleBuffer
-        )
-
-        guard copyStatus == noErr else { return sampleBuffer }
-        return adjustedSampleBuffer
-    }
-
-    private func retimedMicSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
-        guard let firstScreenPTS, let firstAudioPTS else {
-            return sampleBuffer
-        }
-
-        let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard sampleCount > 0 else { return sampleBuffer }
-
-        var timingInfo = Array(
-            repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid),
-            count: sampleCount
-        )
-
-        let status = CMSampleBufferGetSampleTimingInfoArray(
-            sampleBuffer,
-            entryCount: sampleCount,
-            arrayToFill: &timingInfo,
-            entriesNeededOut: nil
-        )
-
-        guard status == noErr else { return sampleBuffer }
-
-        let offset = CMTimeSubtract(firstScreenPTS, firstAudioPTS)
         let updatedTiming = timingInfo.map { info in
             CMSampleTimingInfo(
                 duration: info.duration,
@@ -1011,13 +1192,34 @@ class RecordingManager: @unchecked Sendable {
         return adjustedSampleBuffer
     }
 
+    private func adjustForPauseOffset(_ sampleBuffer: CMSampleBuffer) -> CMSampleBuffer? {
+        guard pauseOffset != .zero else { return sampleBuffer }
+        return retimed(sampleBuffer, offsetBy: CMTimeSubtract(.zero, pauseOffset))
+    }
+
     private func resetWriterState() {
         sessionStarted = false
         sessionStartTime = nil
+        micClockOffset = nil
+        minimumMicSkew = nil
+        micSkewSampleCount = 0
         pendingScreenSamples.removeAll()
         pendingAudioSamples.removeAll()
-        firstScreenPTS = nil
-        firstAudioPTS = nil
+        queuedAudioSamples.removeAll()
+        nextExpectedAudioPTS = nil
+        micSecondsReceived = 0
+        micSecondsAppended = 0
+        micSecondsFilled = 0
+        micGapCount = 0
+        overlayLagSum = 0
+        overlayLagMax = 0
+        overlayLagCount = 0
+        cameraFramesDelivered = 0
+        cameraMaxArrivalGap = 0
+        lastCameraArrival = nil
+        cameraDropsByReason = [:]
+        cameraPTSSkewSum = 0
+        cameraPTSSkewMax = 0
         hasWrittenAudioSamples = false
         pauseOffset = .zero
         lastPauseStart = nil
@@ -1032,7 +1234,28 @@ class RecordingManager: @unchecked Sendable {
             self?.handleSystemAudio(sampleBuffer)
         }
         cameraCapturer.onCameraFrame = { [weak self] sampleBuffer in
-            self?.compositor.updateCameraFrame(sampleBuffer)
+            guard let self else { return }
+            self.compositor.updateCameraFrame(sampleBuffer)
+
+            let arrival = CMClockGetTime(CMClockGetHostTimeClock())
+            let ptsSkew = CMTimeSubtract(arrival, CMSampleBufferGetPresentationTimeStamp(sampleBuffer)).seconds
+            self.writerQueue.async {
+                guard self.assetWriter != nil else { return }
+                self.cameraFramesDelivered += 1
+                if let last = self.lastCameraArrival {
+                    self.cameraMaxArrivalGap = max(self.cameraMaxArrivalGap, CMTimeSubtract(arrival, last).seconds)
+                }
+                self.lastCameraArrival = arrival
+                self.cameraPTSSkewSum += ptsSkew
+                self.cameraPTSSkewMax = max(self.cameraPTSSkewMax, ptsSkew)
+            }
+        }
+        cameraCapturer.onCameraFrameDropped = { [weak self] reason in
+            guard let self else { return }
+            self.writerQueue.async {
+                guard self.assetWriter != nil else { return }
+                self.cameraDropsByReason[reason, default: 0] += 1
+            }
         }
         cameraCapturer.onMicAudio = { [weak self] sampleBuffer in
             self?.handleMicAudio(sampleBuffer)
@@ -1331,7 +1554,8 @@ class RecordingManager: @unchecked Sendable {
     }
 
     private func restorePreviewIfVisible() {
-        guard permissionsReady, !isRecording, !isRunningMicrophoneCheck, floatingCameraWindowController.isVisible else {
+        guard permissionsReady, state != .preparing, !isRecording, !isRunningMicrophoneCheck,
+              floatingCameraWindowController.isVisible else {
             return
         }
 
