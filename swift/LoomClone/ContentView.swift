@@ -5,6 +5,7 @@ import AVFoundation
 struct ContentView: View {
     @Bindable var manager: RecordingManager
     var authManager: AuthManager
+    var onUploadExternalVideo: ((URL) -> Void)?
     @State private var selectedDisplay: SCDisplay?
     @State private var captureMode: RecordingCaptureMode = .display
     @State private var selectedWindowID: CGWindowID?
@@ -72,6 +73,16 @@ struct ContentView: View {
                     manager.quitApplication()
                 }
                 .buttonStyle(.borderless)
+
+                Button {
+                    uploadExistingVideo()
+                } label: {
+                    Text("Upload existing video")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.borderless)
+                .padding(.top, 4)
             }
             .frame(maxWidth: .infinity)
             .padding(30)
@@ -92,6 +103,27 @@ struct ContentView: View {
         .sheet(isPresented: $showingSettings) {
             AWSSettingsView(authManager: authManager)
         }
+    }
+
+    private func uploadExistingVideo() {
+        let panel = NSOpenPanel()
+        panel.title = "Select a video to upload"
+        panel.allowedContentTypes = [.mpeg4Movie, .quickTimeMovie]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // Copy into a uniquely named temp file so the S3 object key never
+        // collides with another upload that happens to share the same filename.
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loomclone-\(UUID().uuidString).\(url.pathExtension)")
+        do {
+            try FileManager.default.copyItem(at: url, to: tempURL)
+        } catch {
+            manager.state = .error("Failed to open video: \(error.localizedDescription)")
+            return
+        }
+        onUploadExternalVideo?(tempURL)
     }
 
     private var recordingControlsView: some View {

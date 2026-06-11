@@ -131,7 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.animates = true
         popover.contentSize = PopoverLayout.signInSize
         popover.contentViewController = NSHostingController(
-            rootView: ContentView(manager: manager, authManager: authManager)
+            rootView: ContentView(manager: manager, authManager: authManager) { [weak self] url in
+                guard let self else { return }
+                self.closePopover()
+                self.postRecordingWindowController.show(fileURL: url, manager: self.manager)
+            }
         )
     }
 
