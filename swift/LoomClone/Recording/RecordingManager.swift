@@ -210,6 +210,7 @@ class RecordingManager: @unchecked Sendable {
     private var pendingScreenSamples: [CMSampleBuffer] = []
     private var pendingAudioSamples: [CMSampleBuffer] = []
     private var queuedAudioSamples: [CMSampleBuffer] = []
+    private var samplesAwaitingSkewDecision: [CMSampleBuffer] = []
     private var nextExpectedAudioPTS: CMTime?
     private var micSecondsReceived: Double = 0
     private var micSecondsAppended: Double = 0
@@ -921,20 +922,37 @@ class RecordingManager: @unchecked Sendable {
 
             if self.state == .paused { return }
 
-            if self.micClockOffset == nil {
-                self.updateMicClockOffsetMeasurement(for: sampleBuffer, arrivalTime: arrivalTime)
-            }
-
             self.micSecondsReceived += CMSampleBufferGetDuration(sampleBuffer).seconds
 
-            if !self.sessionStarted {
-                self.pendingAudioSamples.append(sampleBuffer)
-                self.tryStartSessionIfReady(writer: writer)
-                return
+            // Hold audio until the skew decision is made: corrections apply at
+            // append time, so appending earlier samples uncorrected would leave
+            // them mis-timed and create a discontinuity at the decision point.
+            if self.micClockOffset == nil {
+                self.updateMicClockOffsetMeasurement(for: sampleBuffer, arrivalTime: arrivalTime)
+                guard self.micClockOffset != nil else {
+                    self.samplesAwaitingSkewDecision.append(sampleBuffer)
+                    return
+                }
+
+                let deferred = self.samplesAwaitingSkewDecision
+                self.samplesAwaitingSkewDecision.removeAll()
+                for sample in deferred {
+                    self.routeAudioSample(sample, writer: writer, input: input)
+                }
             }
 
-            self.appendAudioSample(sampleBuffer, writer: writer, input: input)
+            self.routeAudioSample(sampleBuffer, writer: writer, input: input)
         }
+    }
+
+    private func routeAudioSample(_ sampleBuffer: CMSampleBuffer, writer: AVAssetWriter, input: AVAssetWriterInput) {
+        if !sessionStarted {
+            pendingAudioSamples.append(sampleBuffer)
+            tryStartSessionIfReady(writer: writer)
+            return
+        }
+
+        appendAudioSample(sampleBuffer, writer: writer, input: input)
     }
 
     private func tryStartSessionIfReady(writer: AVAssetWriter) {
@@ -1206,6 +1224,7 @@ class RecordingManager: @unchecked Sendable {
         pendingScreenSamples.removeAll()
         pendingAudioSamples.removeAll()
         queuedAudioSamples.removeAll()
+        samplesAwaitingSkewDecision.removeAll()
         nextExpectedAudioPTS = nil
         micSecondsReceived = 0
         micSecondsAppended = 0

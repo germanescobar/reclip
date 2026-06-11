@@ -178,11 +178,20 @@ class CameraCapturer: NSObject, @unchecked Sendable {
         do {
             try device.lockForConfiguration()
             device.activeFormat = chosen
-            // Use the range's own duration values: DAL/USB cameras only accept
-            // exact durations from their supported ranges and throw otherwise.
+            // Target 30fps, clamped into the range's own duration bounds:
+            // DAL/USB cameras throw on durations outside the supported range,
+            // and the range minimum would pin 60fps+ modes to their maximum
+            // rate, far above what the 30fps compositing pipeline needs.
             if let range = chosen.videoSupportedFrameRateRanges.max(by: { $0.maxFrameRate < $1.maxFrameRate }) {
-                device.activeVideoMinFrameDuration = range.minFrameDuration
-                device.activeVideoMaxFrameDuration = range.minFrameDuration
+                var duration = CMTime(value: 1, timescale: 30)
+                if CMTimeCompare(duration, range.minFrameDuration) < 0 {
+                    duration = range.minFrameDuration
+                }
+                if CMTimeCompare(duration, range.maxFrameDuration) > 0 {
+                    duration = range.maxFrameDuration
+                }
+                device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
             }
             device.unlockForConfiguration()
             avSyncLog("camera: locked format \(chosen)")
