@@ -749,7 +749,7 @@ class RecordingManager: @unchecked Sendable {
         state = .recording
     }
 
-    func uploadRecording(fileURL: URL, title: String? = nil, description: String? = nil, transcript: RecordingTranscript? = nil) async {
+    func uploadRecording(fileURL: URL, title: String? = nil, description: String? = nil, transcript: RecordingTranscript? = nil, defaultPlaybackSpeed: Float? = nil) async {
         state = .uploading
         uploadProgress = 0
 
@@ -771,7 +771,8 @@ class RecordingManager: @unchecked Sendable {
                     title: recordingTitle,
                     s3URL: s3URL,
                     description: description,
-                    transcript: transcript
+                    transcript: transcript,
+                    defaultPlaybackSpeed: defaultPlaybackSpeed
                 )
                 print("[Upload] API success. Shareable URL: \(shareableURL)")
                 state = .uploaded(shareableURL)

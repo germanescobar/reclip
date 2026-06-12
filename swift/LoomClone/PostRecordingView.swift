@@ -288,7 +288,8 @@ struct PostRecordingView: View {
                 fileURL: fileURL,
                 title: recordingTitle,
                 description: desc,
-                transcript: editedTranscript
+                transcript: editedTranscript,
+                defaultPlaybackSpeed: playbackSpeed
             )
         }
     }

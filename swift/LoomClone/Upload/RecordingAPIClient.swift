@@ -33,7 +33,7 @@ enum RecordingAPIError: LocalizedError {
 }
 
 class RecordingAPIClient {
-    func createRecording(title: String, s3URL: String, description: String? = nil, transcript: RecordingTranscript? = nil) async throws -> String {
+    func createRecording(title: String, s3URL: String, description: String? = nil, transcript: RecordingTranscript? = nil, defaultPlaybackSpeed: Float? = nil) async throws -> String {
         let settings = AWSSettingsStorage.load()
 
         guard !settings.apiBaseURL.isEmpty, !settings.apiKey.isEmpty else {
@@ -67,6 +67,11 @@ class RecordingAPIClient {
                     "text": segment.text
                 ]
             }
+        }
+        if let defaultPlaybackSpeed, defaultPlaybackSpeed > 0 {
+            // Send as Double so the JSON number is well-formed for Supabase's
+            // NUMERIC(4, 2) column regardless of the local Float precision.
+            body["default_playback_speed"] = Double(defaultPlaybackSpeed)
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

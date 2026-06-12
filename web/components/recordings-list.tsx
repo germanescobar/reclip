@@ -22,9 +22,21 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Video, MoreVertical, Pencil, Trash2, Link2, ExternalLink } from "lucide-react"
 import { Empty } from "@/components/ui/empty"
+
+const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+// Sentinel value used in the <Select> to represent "no explicit default" (the
+// column will be persisted as NULL, so the player falls back to 1.5x).
+const DEFAULT_SPEED_NONE = "default"
 
 interface RecordingsListProps {
   recordings: Recording[]
@@ -33,6 +45,7 @@ interface RecordingsListProps {
 export function RecordingsList({ recordings: initialRecordings }: RecordingsListProps) {
   const [recordings, setRecordings] = useState(initialRecordings)
   const [editingRecording, setEditingRecording] = useState<Recording | null>(null)
+  const [editDefaultSpeed, setEditDefaultSpeed] = useState<string>(DEFAULT_SPEED_NONE)
   const [deletingRecording, setDeletingRecording] = useState<Recording | null>(null)
   const [isUpdating, setIsUpdating] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -55,22 +68,37 @@ export function RecordingsList({ recordings: initialRecordings }: RecordingsList
     const formData = new FormData(e.currentTarget)
     const title = formData.get("title") as string
     const description = formData.get("description") as string
+    const defaultPlaybackSpeed =
+      editDefaultSpeed === DEFAULT_SPEED_NONE
+        ? null
+        : Number.parseFloat(editDefaultSpeed)
 
     const { error } = await supabase
       .from("recordings")
-      .update({ title, description })
+      .update({ title, description, default_playback_speed: defaultPlaybackSpeed })
       .eq("id", editingRecording.id)
 
     if (!error) {
       setRecordings((prev) =>
         prev.map((r) =>
-          r.id === editingRecording.id ? { ...r, title, description } : r
+          r.id === editingRecording.id
+            ? { ...r, title, description, default_playback_speed: defaultPlaybackSpeed }
+            : r
         )
       )
       setEditingRecording(null)
       router.refresh()
     }
     setIsUpdating(false)
+  }
+
+  const openEditDialog = (recording: Recording) => {
+    setEditDefaultSpeed(
+      typeof recording.default_playback_speed === "number"
+        ? String(recording.default_playback_speed)
+        : DEFAULT_SPEED_NONE
+    )
+    setEditingRecording(recording)
   }
 
   const handleDelete = async () => {
@@ -139,7 +167,7 @@ export function RecordingsList({ recordings: initialRecordings }: RecordingsList
                       Open recording
                     </a>
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setEditingRecording(recording)}>
+                  <DropdownMenuItem onClick={() => openEditDialog(recording)}>
                     <Pencil className="w-4 h-4 mr-2" />
                     Edit
                   </DropdownMenuItem>
@@ -183,7 +211,7 @@ export function RecordingsList({ recordings: initialRecordings }: RecordingsList
           <DialogHeader>
             <DialogTitle>Edit Recording</DialogTitle>
             <DialogDescription>
-              Update the title and description of your recording.
+              Update the title, description, and default playback speed.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleUpdate}>
@@ -205,6 +233,26 @@ export function RecordingsList({ recordings: initialRecordings }: RecordingsList
                   defaultValue={editingRecording?.description || ""}
                   rows={3}
                 />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="default-speed">Default playback speed</Label>
+                <Select value={editDefaultSpeed} onValueChange={setEditDefaultSpeed}>
+                  <SelectTrigger id="default-speed" className="w-full">
+                    <SelectValue placeholder="Pick a speed" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={DEFAULT_SPEED_NONE}>Default (1.5x)</SelectItem>
+                    {PLAYBACK_SPEEDS.map((speed) => (
+                      <SelectItem key={speed} value={String(speed)}>
+                        {speed}x
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Speed that viewers see when they open the share link. Viewers can still
+                  pick a different speed from the player controls.
+                </p>
               </div>
             </div>
             <DialogFooter>
