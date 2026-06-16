@@ -48,13 +48,16 @@ struct PostRecordingView: View {
     private var leftPanel: some View {
         VStack(spacing: 16) {
             if let player {
-                ZStack(alignment: .topTrailing) {
-                    PlayerView(player: player)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .onAppear { player.play() }
+                PlayerView(player: player)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onAppear { player.play() }
 
+                // Sits just below the video rather than overlaid on the
+                // AVPlayerView's own top-right volume/scrubber controls,
+                // which would otherwise collide with the chip.
+                HStack {
+                    Spacer()
                     speedMenu
-                        .padding(8)
                 }
             }
 
