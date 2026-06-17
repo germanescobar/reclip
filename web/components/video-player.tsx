@@ -52,6 +52,9 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
       ? recording.default_playback_speed
       : FALLBACK_PLAYBACK_SPEED
   const [playbackSpeed, setPlaybackSpeed] = useState(initialSpeed)
+  // Mirror the selected speed in a ref so event handlers can re-assert it
+  // without forcing the listener effect to re-subscribe on every change.
+  const playbackSpeedRef = useRef(initialSpeed)
   const [showControls, setShowControls] = useState(true)
   const [isBuffering, setIsBuffering] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -121,6 +124,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
 
   const handleSpeedChange = (speed: number) => {
     setPlaybackSpeed(speed)
+    playbackSpeedRef.current = speed
     if (videoRef.current) {
       videoRef.current.playbackRate = speed
     }
@@ -153,10 +157,15 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
   }, [isPlaying])
 
   useEffect(() => {
+    playbackSpeedRef.current = playbackSpeed
+    if (videoRef.current) {
+      videoRef.current.playbackRate = playbackSpeed
+    }
+  }, [playbackSpeed])
+
+  useEffect(() => {
     const video = videoRef.current
     if (!video) return
-
-    video.playbackRate = initialSpeed
 
     const handlePlay = () => setIsPlaying(true)
     const handlePause = () => setIsPlaying(false)
@@ -164,9 +173,9 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
     const handleLoadedMetadata = () => {
       // Re-assert the currently selected rate in case the player reset it
       // after a metadata load (e.g. when the source loads asynchronously and
-      // the browser clears playbackRate to 1.0). Use the React state, not the
-      // default, so a user-chosen speed survives subsequent metadata events.
-      video.playbackRate = playbackSpeed
+      // the browser clears playbackRate to 1.0). Read from the ref so a
+      // user-chosen speed survives subsequent metadata events.
+      video.playbackRate = playbackSpeedRef.current
       setDuration(video.duration)
     }
     const handleWaiting = () => setIsBuffering(true)
@@ -187,7 +196,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
       video.removeEventListener("waiting", handleWaiting)
       video.removeEventListener("canplay", handleCanPlay)
     }
-  }, [initialSpeed, playbackSpeed])
+  }, [])
 
   useEffect(() => {
     const handleFullscreenChange = () => {
