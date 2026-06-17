@@ -33,7 +33,7 @@ interface VideoPlayerProps {
 }
 
 const PLAYBACK_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
-const DEFAULT_PLAYBACK_SPEED = 1.5
+const FALLBACK_PLAYBACK_SPEED = 1.5
 
 export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -44,7 +44,17 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
   const [volume, setVolume] = useState(1)
   const [isMuted, setIsMuted] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [playbackSpeed, setPlaybackSpeed] = useState(DEFAULT_PLAYBACK_SPEED)
+  // Prefer the per-recording default set by the owner. Fall back to 1.5x
+  // when the column is missing or null (e.g. recordings created before the
+  // migration, or before the owner picked a speed).
+  const initialSpeed =
+    typeof recording.default_playback_speed === "number" && recording.default_playback_speed > 0
+      ? recording.default_playback_speed
+      : FALLBACK_PLAYBACK_SPEED
+  const [playbackSpeed, setPlaybackSpeed] = useState(initialSpeed)
+  // Mirror the selected speed in a ref so event handlers can re-assert it
+  // without forcing the listener effect to re-subscribe on every change.
+  const playbackSpeedRef = useRef(initialSpeed)
   const [showControls, setShowControls] = useState(true)
   const [isBuffering, setIsBuffering] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
@@ -114,6 +124,7 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
 
   const handleSpeedChange = (speed: number) => {
     setPlaybackSpeed(speed)
+    playbackSpeedRef.current = speed
     if (videoRef.current) {
       videoRef.current.playbackRate = speed
     }
@@ -146,15 +157,27 @@ export function VideoPlayer({ recording, isLoggedIn, ownerName }: VideoPlayerPro
   }, [isPlaying])
 
   useEffect(() => {
+    playbackSpeedRef.current = playbackSpeed
+    if (videoRef.current) {
+      videoRef.current.playbackRate = playbackSpeed
+    }
+  }, [playbackSpeed])
+
+  useEffect(() => {
     const video = videoRef.current
     if (!video) return
-
-    video.playbackRate = DEFAULT_PLAYBACK_SPEED
 
     const handlePlay = () => setIsPlaying(true)
     const handlePause = () => setIsPlaying(false)
     const handleTimeUpdate = () => setCurrentTime(video.currentTime)
-    const handleLoadedMetadata = () => setDuration(video.duration)
+    const handleLoadedMetadata = () => {
+      // Re-assert the currently selected rate in case the player reset it
+      // after a metadata load (e.g. when the source loads asynchronously and
+      // the browser clears playbackRate to 1.0). Read from the ref so a
+      // user-chosen speed survives subsequent metadata events.
+      video.playbackRate = playbackSpeedRef.current
+      setDuration(video.duration)
+    }
     const handleWaiting = () => setIsBuffering(true)
     const handleCanPlay = () => setIsBuffering(false)
 

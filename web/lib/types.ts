@@ -14,6 +14,11 @@ export interface Recording {
   s3_url: string
   transcript_text: string | null
   transcript_segments: TranscriptSegment[] | null
+  /**
+   * Per-recording default playback speed the owner chose. `null` means
+   * "no explicit default set" and the player falls back to 1.5x.
+   */
+  default_playback_speed: number | null
   created_at: string
   updated_at: string
 }

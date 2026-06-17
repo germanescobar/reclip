@@ -70,7 +70,7 @@ export async function POST(request: Request) {
 
     // Parse the request body
     const body = await request.json()
-    const { title, description, s3_url, transcript_text, transcript_segments } = body
+    const { title, description, s3_url, transcript_text, transcript_segments, default_playback_speed } = body
 
     if (!title || typeof title !== "string") {
       return NextResponse.json(
@@ -112,6 +112,24 @@ export async function POST(request: Request) {
       }
     }
 
+    // default_playback_speed is optional. Accept undefined/null (no explicit
+    // default) or a positive finite number. A DB-level CHECK constraint
+    // enforces positivity as well, but we validate here for a clear 400.
+    let normalizedDefaultSpeed: number | null = null
+    if (default_playback_speed !== undefined && default_playback_speed !== null) {
+      if (
+        typeof default_playback_speed !== "number" ||
+        !Number.isFinite(default_playback_speed) ||
+        default_playback_speed <= 0
+      ) {
+        return NextResponse.json(
+          { error: "default_playback_speed must be a positive number" },
+          { status: 400 }
+        )
+      }
+      normalizedDefaultSpeed = default_playback_speed
+    }
+
     // Generate a unique short ID
     let shortId = generateShortId()
     let attempts = 0
@@ -151,6 +169,7 @@ export async function POST(request: Request) {
         transcript_segments: Array.isArray(transcript_segments) && transcript_segments.length > 0
           ? transcript_segments
           : null,
+        default_playback_speed: normalizedDefaultSpeed,
       })
       .select()
       .single()

@@ -14,9 +14,13 @@ struct PostRecordingView: View {
     @State private var hasTranscript = false
     @State private var savedLocalURL: URL?
     @State private var player: AVPlayer?
+    @State private var playbackSpeed: Float = PostRecordingView.defaultPlaybackSpeed
     @FocusState private var isTitleFocused: Bool
 
     private let transcriptionClient = GroqTranscriptionClient()
+
+    static let playbackSpeeds: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    static let defaultPlaybackSpeed: Float = 1.5
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,7 +34,10 @@ struct PostRecordingView: View {
             bottomBar
         }
         .onAppear {
-            player = AVPlayer(url: fileURL)
+            let newPlayer = AVPlayer(url: fileURL)
+            newPlayer.defaultRate = playbackSpeed
+            newPlayer.rate = playbackSpeed
+            player = newPlayer
             isTitleFocused = true
         }
         .onDisappear {
@@ -44,6 +51,14 @@ struct PostRecordingView: View {
                 PlayerView(player: player)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .onAppear { player.play() }
+
+                // Sits just below the video rather than overlaid on the
+                // AVPlayerView's own top-right volume/scrubber controls,
+                // which would otherwise collide with the chip.
+                HStack {
+                    Spacer()
+                    speedMenu
+                }
             }
 
             VStack(spacing: 8) {
@@ -114,6 +129,55 @@ struct PostRecordingView: View {
         let cmTime = CMTime(seconds: time, preferredTimescale: 600)
         player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero)
         player?.play()
+    }
+
+    private var speedMenu: some View {
+        Menu {
+            ForEach(Self.playbackSpeeds, id: \.self) { speed in
+                Button {
+                    setPlaybackSpeed(speed)
+                } label: {
+                    if speed == playbackSpeed {
+                        Label("\(speed, format: .number.precision(.fractionLength(0...2)))x", systemImage: "checkmark")
+                    } else {
+                        Text("\(speed, format: .number.precision(.fractionLength(0...2)))x")
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "speedometer")
+                Text("\(formatSpeed(playbackSpeed))x")
+            }
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(
+                Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 1)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private func setPlaybackSpeed(_ speed: Float) {
+        playbackSpeed = speed
+        guard let player else { return }
+        player.defaultRate = speed
+        // If the player is currently playing, also update the live rate so the
+        // change applies immediately rather than only on the next play() call.
+        if player.timeControlStatus == .playing {
+            player.rate = speed
+        }
+    }
+
+    private func formatSpeed(_ speed: Float) -> String {
+        let formatter = NumberFormatter()
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: speed)) ?? String(speed)
     }
 
     private var bottomBar: some View {
@@ -227,7 +291,8 @@ struct PostRecordingView: View {
                 fileURL: fileURL,
                 title: recordingTitle,
                 description: desc,
-                transcript: editedTranscript
+                transcript: editedTranscript,
+                defaultPlaybackSpeed: playbackSpeed
             )
         }
     }
